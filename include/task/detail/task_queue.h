@@ -1,5 +1,5 @@
-#ifndef _TASK_QUEUE_H_
-#define _TASK_QUEUE_H_
+#ifndef _TASK_DETAIL_QUEUE_H_
+#define _TASK_DETAIL_QUEUE_H_
 
 #include <boost/thread/concurrent_queues/sync_priority_queue.hpp>
 #include <boost/thread/concurrent_queues/sync_queue.hpp>

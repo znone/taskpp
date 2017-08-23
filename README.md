@@ -10,6 +10,7 @@
 
 ```C++
 #include <task.h>
+using namespace task;
 ```
 
 #### TaskScheduler
@@ -48,20 +49,43 @@ using TaskSharedPtr=std::shared_ptr<Task<R>>;
 #### this_task
 
 名字空间this_task里的函数只能在任务内使用。
-- self()		获取任务自身的指针。
+- self()		获取当前任务自身的指针。
 - yield()	当前任务让出执行。
-- sleep_for(expiry_time), sleep_until(expiry_time)		让当前任务停止一段时间。
+- sleep_for(expiry_time), sleep_until(expiry_time)		让当前任务暂停一段时间。
 
 #### 互斥和信号量
 
-这里提供的互斥和信号量用于任务间的同步。信号量只能在任务内等待。
+这里提供的互斥和信号量用于任务间的同步。互斥和信号量的用法与标准库类似，但是这里的信号量只能在任务内等待。
+```C++
+task::mutex m;
+std::unique_lock<task::mutex> lk(m);
+```
+
+#### 在任务间传递消息
+
+模板类blocking_message可以用来在任务之间传递消息。发送消息的任务会阻塞，直到有任务接收消息为止。
+
+```C++
+task::TaskScheduler<> scheduler;
+task::blocking_message<std::string> message;
+// send message
+scheduler.push([&message]() mutable {
+	message<<std::string("Hello");
+});
+// receive message
+scheduler.push([&message]() mutable {
+	std::string str;
+	message>>str;
+});
+scheduler.join_all();
+```
 
 #### 任务链
 
 任务链能保证任务之前的执行顺序。
 
 ```C++
-TaskScheduler<> scheduler;
+task::TaskScheduler<> scheduler;
 int v1=2, v2=3;
 auto task1=scheduler.create_task([v1]() { 
 	return v1*v1;
@@ -79,7 +103,7 @@ scheduler.push(task1);
 
 在 E6320 处理器（现在很难找到比这还差的机器了吧？）上进行性能测试:
 
-- 执行100万个简单任务，总耗时4.2秒左右，平均每个耗时4.2微秒左右。
+- 执行100万个简单任务，总耗时3.2秒左右，平均每个耗时3.2微秒左右。
 - 同时执行1000个任务，每个任务切换10万次，总耗时8秒左右，平均每次任务切换耗时80纳秒。
 
 ### 关于测试

@@ -113,9 +113,9 @@ public:
 	iterator end() { return data_.end(); }
 	const_iterator end() const { return data_.end(); }
 
-	iterator insert(iterator where, const_iterator first, const_iterator last)
+	void insert(iterator where, const_iterator first, const_iterator last)
 	{
-		return data_.insert(where, first, last);
+		data_.insert(where, first, last);
 	}
 
 	void pop_front_n(size_t n)

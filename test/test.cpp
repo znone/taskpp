@@ -1,6 +1,10 @@
 #include "test.h"
 #include <fstream>
 #include <array>
+#include <task/task.h>
+#include <task/mutex.h>
+#include <task/condition_variable.h>
+#include <task/blocking_queue.h>
 
 using namespace std;
 using namespace task;
@@ -15,6 +19,7 @@ TestTask::TestTask()
 	TEST_ADD(TestTask::test_proirity)
 	TEST_ADD(TestTask::test_mutex)
 	TEST_ADD(TestTask::test_condition_variable)
+	TEST_ADD(TestTask::test_blocking_message)
 	TEST_ADD(TestTask::test_cancel)
 	TEST_ADD(TestTask::test_performance)
 	TEST_ADD(TestTask::test_yield)
@@ -62,12 +67,12 @@ void TestTask::test_sleep()
 	config.max_threads_=1;
 	TaskScheduler<> scheduler(config);
 	scheduler.push([this]{
-		chrono::system_clock::time_point begin=chrono::system_clock::now();
-		chrono::system_clock::duration d=chrono::seconds(1);
+		boost::chrono::steady_clock::time_point begin=boost::chrono::steady_clock::now();
+		boost::chrono::steady_clock::duration d=boost::chrono::seconds(1);
 		this_task::sleep_for(d);
-		chrono::system_clock::time_point end=chrono::system_clock::now();
-		chrono::system_clock::duration r=end-begin;
-		TEST_ASSERT_DELTA( r, d, chrono::seconds(1));
+		boost::chrono::steady_clock::time_point end=boost::chrono::steady_clock::now();
+		boost::chrono::steady_clock::duration r=end-begin;
+		TEST_ASSERT_DELTA( r, d, boost::chrono::seconds(1));
 	});
 	scheduler.join_all();
 }
@@ -137,6 +142,28 @@ void TestTask::test_condition_variable()
 	TEST_ASSERT_EQUALS_OBJ("first task.second task.", str);
 }
 
+void TestTask::test_blocking_message()
+{
+	TaskScheduler<> scheduler;
+	blocking_message<std::string> message;
+	std::string send_msg("message.");
+	std::string recv_msg;
+	for(size_t i=0; i!=5; i++)
+	{
+		scheduler.push([&message, &send_msg]() mutable {
+			message<<send_msg;
+		});
+	}
+	for(size_t i=0; i!=5; i++)
+	{
+		scheduler.push([&message, &recv_msg]() mutable {
+			message>>recv_msg;
+		});
+	}
+	scheduler.join_all();
+	TEST_ASSERT_EQUALS_OBJ(send_msg, recv_msg);
+}
+
 void TestTask::test_proirity()
 {
 	TaskSchedulerParam config;
@@ -145,17 +172,20 @@ void TestTask::test_proirity()
 
 	std::mutex m;
 	std::condition_variable cv;
-	bool ready=false;
+	bool prepare=false, ready=false;
 	vector<int> v;
 	auto f=[&v]() mutable {
 		v.push_back(this_task::self()->priority());
 	};
-	scheduler.push([&m, &cv, &ready]() mutable {
+	scheduler.push([&]() mutable {
 		unique_lock<std::mutex> lk(m);
+		prepare=true;
+		cv.notify_one();
 		cv.wait(lk, [&ready]() { return ready; } );
 	}, 0);
 	{
 		unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&prepare]() { return prepare; } );
 		scheduler.push(f, 4);
 		scheduler.push(f, 1);
 		scheduler.push(f, 10);

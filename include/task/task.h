@@ -12,10 +12,7 @@
 #include <chrono>
 #include <mutex>
 #include <boost/version.hpp>
-#include <boost/asio/io_service.hpp>
-#include <boost/asio/system_timer.hpp>
 #include <boost/thread/shared_mutex.hpp>
-#include <boost/coroutine/asymmetric_coroutine.hpp>
 
 #if BOOST_VERSION<=106000
 #include <boost/context/fcontext.hpp>
@@ -25,7 +22,7 @@
 #include <boost/context/stack_context.hpp>
 #include <boost/context/fixedsize_stack.hpp>
 
-#include "task_queue.h"
+#include "detail/task_queue.h"
 
 #if __cplusplus>=201103L || ( defined(_MSC_VER) && _MSC_VER>=1900 )
 #define THREAD_LOCAL thread_local
@@ -60,8 +57,6 @@ namespace this_task
 {
 	TaskBase* self();
 	void yield();
-	void sleep_for(const std::chrono::system_clock::duration& expiry_time);
-	void sleep_until(const std::chrono::system_clock::time_point& expiry_time);
 }
 
 struct task_canceled : public std::exception
@@ -202,13 +197,16 @@ struct TaskPriority
 	}
 };
 
+namespace detail
+{
+
 class WorkThreadBase
 {
 public:
 	virtual ~WorkThreadBase() { }
 	TaskBase* current_task() const { return current_task_; }
-	virtual void task_sleep_for(const std::chrono::system_clock::duration& expiry_time) = 0;
-	virtual void task_sleep_until(const std::chrono::system_clock::time_point& expiry_time) = 0;
+	virtual void task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) = 0;
+	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) = 0;
 	virtual void wakeup_task() =0;
 protected:
 	TaskBase* current_task_ { nullptr };
@@ -229,12 +227,19 @@ protected:
 	THREAD_LOCAL static WorkThreadBase* this_thread_;
 };
 
+#ifdef _MSC_VER
+__declspec(selectany)
+#else
+__attribute__((weak))
+#endif
 THREAD_LOCAL WorkThreadBase* ITaskScheduler::this_thread_=nullptr;
+
+}
 
 class ChainTask : public TaskBase
 {
 public:
-	ChainTask(ITaskScheduler& schedule, int priority)
+	ChainTask(detail::ITaskScheduler& schedule, int priority)
 		: TaskBase(priority), schedule_(schedule)
 	{
 	}
@@ -242,7 +247,7 @@ public:
 	void next(TaskPtr next_task) { next_task_=next_task; }
 
 protected:
-	ITaskScheduler& schedule_;
+	detail::ITaskScheduler& schedule_;
 	TaskPtr next_task_;
 
 	void push_next()
@@ -259,7 +264,7 @@ class Task : public ChainTask, public std::enable_shared_from_this<Task<R>>
 public:
 	typedef R result_type;
 	template<typename F>
-	Task(ITaskScheduler& schedule, F&& f, int priority) 
+	Task(detail::ITaskScheduler& schedule, F&& f, int priority) 
 		: ChainTask(schedule, priority), task_(std::forward<F>(f))
 	{
 		fut_=task_.get_future();
@@ -317,7 +322,7 @@ class Task<void> : public ChainTask, public std::enable_shared_from_this<Task<vo
 public:
 	typedef void result_type;
 	template<typename F>
-	Task(ITaskScheduler& schedule, F&& f, int priority) 
+	Task(detail::ITaskScheduler& schedule, F&& f, int priority) 
 		: ChainTask(schedule, priority), task_(std::forward<F>(f)) 
 	{
 		fut_=task_.get_future();
@@ -376,9 +381,10 @@ struct TaskSchedulerParam
 	size_t max_threads_;
 	size_t max_tasks_;
 	size_t stack_size_;
+	bool disable_coroutine_;
 
 	TaskSchedulerParam()
-		: max_tasks_(1024), stack_size_(0)
+		: max_tasks_(1024), stack_size_(0), disable_coroutine_(false)
 	{
 		max_threads_ = std::thread::hardware_concurrency() * 2;
 	}
@@ -393,9 +399,11 @@ class TaskScheduler : public ITaskScheduler
 {
 public:
 	typedef typename StackAllocator::traits_type stack_traits_type;
-	TaskScheduler()
+	TaskScheduler(bool disable_coroutine=false)
 	{
-		param_.stack_size_=stack_traits_type::default_size();
+		param_.disable_coroutine_ = disable_coroutine;
+		if(param_.stack_size_==0) 
+			param_.stack_size_=stack_traits_type::default_size();
 	}
 	TaskScheduler(const TaskSchedulerParam& param)
 		: param_(param)
@@ -459,8 +467,6 @@ public:
 		}
 	}
 
-	size_t size() const { return task_queue_.size(); }
-	bool empty() const { return task_queue_.empty(); }
 	void join_all()
 	{
 		if (task_queue_.size() > thread_size() * 100)
@@ -507,30 +513,38 @@ private:
 			return task_queue_.try_push(task)==boost::queue_op_status::success;
 		}
 
-		virtual void task_sleep_for(const std::chrono::system_clock::duration& expiry_time) override
+		virtual void task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) override
 		{
-			std::unique_ptr<boost::asio::system_timer> timer(new boost::asio::system_timer(service_));
-			timer->expires_from_now(expiry_time);
-			sleep(current_task_, std::move(timer));
+			task_sleep_until(boost::chrono::steady_clock::now()+expiry_time);
 		}
-		virtual void task_sleep_until(const std::chrono::system_clock::time_point& expiry_time) override
+		virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) override
 		{
-			std::unique_ptr<boost::asio::system_timer> timer(new boost::asio::system_timer(service_));
-			timer->expires_at(expiry_time);
-			sleep(current_task_, std::move(timer));
+			sleeping_tasks_.emplace(expiry_time, current_task_);
 		}
 		virtual void wakeup_task()
 		{
-			sleeping_tasks_.erase(current_task_);
+			for(auto it=sleeping_tasks_.begin(); it!=sleeping_tasks_.end(); it++)
+			{
+				if(it->second==current_task_)
+				{
+					current_task_->resume();
+					sleeping_tasks_.erase(it);
+					break;
+				}
+				if(task_queue_.empty())
+				{
+					push(std::make_shared<Task<void>>(*scheduler_, 
+						[]() { }, 0));
+				}
+			}
 		}
 
 	private:
 		typedef std::list<std::pair<TaskPtr, coroutine_context*>> executing_list;
 		Queue task_queue_;
-		std::map<ITask*, std::unique_ptr<boost::asio::system_timer>> sleeping_tasks_;
+		std::map<boost::chrono::steady_clock::time_point, TaskBase*> sleeping_tasks_;
 		bool stoped_ { false };
 		TaskScheduler* scheduler_;
-		boost::asio::io_service service_;
 		std::thread thread_;
 		StackAllocator stack_allocator_;
 		std::vector<boost::context::stack_context> stacks_;
@@ -544,36 +558,51 @@ private:
 			while (1)
 			{
 				TaskPtr task;
+				boost::chrono::steady_clock::time_point suspend_time = wakeup_tasks();
 				size_t actived_count=resume_workers(executing_tasks);
-				if (!pull(task, actived_count==0) && executing_tasks.empty())
+				if (!pull(task, actived_count==0, suspend_time) && executing_tasks.empty())
 					break;
 				if (task)
 				{
-					boost::context::stack_context stack=allocate_stack();
-					current_task_ = task.get();
-					coroutine_context* coroutine=coroutine_context::create_coroutine(current_task_, stack);
-					if (current_task_->invoke(coroutine))
+					if (scheduler_->param().disable_coroutine_)
 					{
-						executing_tasks.emplace_back(task, coroutine);
+						current_task_ = task.get();
+						try
+						{
+							task->execute();
+						}
+						catch (...)
+						{
+
+						}
+						current_task_ = nullptr;
 					}
 					else
 					{
-						stacks_.push_back(coroutine->stack_);
+						boost::context::stack_context stack=allocate_stack();
+						current_task_ = task.get();
+						coroutine_context* coroutine=coroutine_context::create_coroutine(current_task_, stack);
+						if (current_task_->invoke(coroutine))
+						{
+							executing_tasks.emplace_back(task, coroutine);
+						}
+						else
+						{
+							stacks_.push_back(coroutine->stack_);
+						}
+						current_task_ = nullptr;
 					}
-					current_task_ = nullptr;
 				}
-				service_.run_one();
 			}
 			while (!executing_tasks.empty())
 			{
 				resume_workers(executing_tasks);
-				service_.run_one();
 			}
 			stoped_ = true;
 			TaskScheduler::this_thread_ = nullptr;
 		}
 
-		bool pull(TaskPtr& task, bool wait_for_pull)
+		bool pull(TaskPtr& task, bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
 		{
 			boost::queue_op_status st;
 			if(task_queue_.empty())
@@ -586,7 +615,7 @@ private:
 			{
 				try
 				{
-					st = task_queue_.pull_for(boost::chrono::seconds(5), task);
+					st = task_queue_.pull_until(suspend_time, task);
 				}
 				catch (boost::sync_queue_is_closed&)
 				{
@@ -635,17 +664,6 @@ private:
 			return actived_count;
 		}
 
-		void sleep(TaskBase* task, std::unique_ptr<boost::asio::system_timer>&& timer)
-		{
-			auto result = sleeping_tasks_.emplace(task, std::move(timer));
-			task->suspend();
-			result.first->second->async_wait([this, task](const boost::system::error_code& ec) mutable {
-				if (!ec) task->resume();
-				sleeping_tasks_.erase(task);
-				task_queue_.wakeup();
-			});
-		}
-
 		boost::context::stack_context allocate_stack()
 		{
 			boost::context::stack_context stack;
@@ -666,6 +684,32 @@ private:
 				stack_allocator_.deallocate(stack);
 			}
 		}
+
+		boost::chrono::steady_clock::time_point wakeup_tasks()
+		{
+			auto now = boost::chrono::steady_clock::now();
+			auto next_time= now + boost::chrono::seconds(5);
+			auto it=sleeping_tasks_.begin();
+			while(it!=sleeping_tasks_.end())
+			{
+				if(it->first<=now)
+				{
+					it->second->resume();
+					it=sleeping_tasks_.erase(it);
+				}
+				else
+				{
+					break;
+				}
+			}
+			if(!sleeping_tasks_.empty())
+			{
+				it=sleeping_tasks_.begin();
+				if(it->first<=next_time)
+					next_time=it->first;
+			}
+			return next_time;
+		}
 	};
 
 	std::vector<std::unique_ptr<WorkThread>> threads_;
@@ -679,7 +723,7 @@ private:
 		cleanup_threads();
 
 		size_t thread_count=thread_size();
-		for (size_t i = 0; i != n && thread_count!=param_.max_threads_; i++)
+		for (size_t i = 0; i != n && thread_count<=param_.max_threads_; i++)
 		{
 			if( (thread_count==0 && !task_queue_.empty()) ||
 				( thread_count<param_.max_threads_ && 
@@ -727,7 +771,7 @@ private:
 		for (std::unique_ptr<WorkThread>& thread : threads_)
 		{
 			auto task = create_task([]() {
-				WorkThread* this_thread = static_cast<WorkThread*>(ITaskScheduler::this_thread_);
+				WorkThread* this_thread = static_cast<WorkThread*>(ITaskScheduler::this_thread());
 				this_thread->task_queue().close();
 			});
 			thread->push(task);
@@ -764,7 +808,7 @@ private:
 		for (const std::unique_ptr<WorkThread>& thread : threads_)
 		{
 			size_t size = thread->queue_size();
-			if (n==0 || size > n)
+			if (size>0 && (n==0 || size > n) )
 			{
 				p = thread.get();
 				n = size;
@@ -867,7 +911,7 @@ class PriorityTaskScheduler : public detail::TaskScheduler <detail::sync_priorit
 {
 	typedef detail::TaskScheduler<detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry> base_;
 public:
-	PriorityTaskScheduler() = default;
+	PriorityTaskScheduler(bool disable_coroutine = false) : base_(disable_coroutine)  { }
 	explicit PriorityTaskScheduler(const TaskSchedulerParam& config) : base_(config) { }
 };
 
@@ -876,21 +920,27 @@ class TaskScheduler : public detail::TaskScheduler<detail::sync_queue<TaskPtr>, 
 {
 	typedef detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry> base_;
 public:
-	TaskScheduler() = default;
+	TaskScheduler(bool disable_coroutine = false) : base_(disable_coroutine) { }
 	explicit TaskScheduler(const TaskSchedulerParam& config) : base_(config) { }
+};
+
+struct io_result
+{
+	boost::system::error_code error;
+	std::size_t bytes_transferred { 0 };
 };
 
 namespace this_task
 {
-	TaskBase* self() { return ITaskScheduler::this_task(); }
-	void yield()
+	inline TaskBase* self() { return detail::ITaskScheduler::this_task(); }
+	inline void yield()
 	{
-		TaskBase* task = ITaskScheduler::this_task();
+		TaskBase* task = detail::ITaskScheduler::this_task();
 		if (task) task->yield();
 	}
-	void sleep_for(const std::chrono::system_clock::duration& expiry_time)
+	inline void sleep_for(const boost::chrono::steady_clock::duration& expiry_time)
 	{
-		WorkThreadBase* thread = ITaskScheduler::this_thread();
+		detail::WorkThreadBase* thread = detail::ITaskScheduler::this_thread();
 		if (thread)
 		{
 			thread->task_sleep_for(expiry_time);
@@ -898,209 +948,31 @@ namespace this_task
 		}
 	}
 
-	void sleep_until(const std::chrono::system_clock::time_point& expiry_time)
+	inline void sleep_until(const boost::chrono::steady_clock::time_point& expiry_time)
 	{
-		WorkThreadBase* thread = ITaskScheduler::this_thread();
+		detail::WorkThreadBase* thread = detail::ITaskScheduler::this_thread();
 		if (thread)
 		{
 			thread->task_sleep_until(expiry_time);
 			yield();
 		}
 	}
+
+	template<typename Function, typename... Args>
+	inline io_result await_io(Function&& fun, Args&&... args)
+	{
+		TaskBase* task=this_task::self();
+		io_result result;
+		fun(std::forward<Args>(args)..., [task, &result](const boost::system::error_code& error, std::size_t bytes_transferred ) mutable {
+			result.error=error;
+			result.bytes_transferred=bytes_transferred;
+			task->resume();
+		});
+		task->suspend();
+		yield();
+		return result;
+	}
 }
-
-template<typename Mutex>
-class basic_mutex
-{
-public:
-	basic_mutex() = default;
-	basic_mutex(const basic_mutex&) = delete;
-	basic_mutex& operator=(const basic_mutex&) = delete;
-	void lock()
-	{
-		if(this_task::self())
-		{
-			if(!mutex_.try_lock())
-				this_task::yield();
-		}
-		else
-		{
-			mutex_.lock();
-		}
-	}
-	bool try_lock() { return mutex_.try_lock(); }
-	void unlock() { return mutex_.unlock(); }
-
-private:
-	Mutex mutex_;
-};
-typedef basic_mutex<std::mutex> mutex;
-typedef basic_mutex<std::recursive_mutex> recursive_mutex;
-
-template<typename Mutex>
-class basic_shared_mutex
-{
-public:
-	basic_shared_mutex() = default;
-	basic_shared_mutex(const basic_shared_mutex&) = delete;
-	basic_shared_mutex& operator=(const basic_shared_mutex&) = delete;
-	void lock()
-	{
-		if(this_task::self())
-		{
-			if(!mutex_.try_lock())
-				this_task::yield();
-		}
-		else
-		{
-			mutex_.lock();
-		}
-	}
-	bool try_lock() { return mutex_.try_lock(); }
-	void unlock() { return mutex_.unlock(); }
-	void lock_shared() 
-	{
-		if(this_task::self())
-		{
-			if(!mutex_.try_lock_shared())
-				this_task::yield();
-		}
-		else
-		{
-			mutex_.lock_shared();
-		}
-	}
-	bool try_lock_shared() { return mutex_.try_lock_shared(); }
-	void unlock_shared() { return mutex_.unlock_shared(); }
-
-private:
-	Mutex mutex_;
-};
-
-class condition_variable
-{
-public:
-	condition_variable() = default;
-	condition_variable(const condition_variable&) = delete;
-	condition_variable& operator=(const condition_variable&) = delete;
-
-	void notify_one()
-	{
-		std::unique_lock<mutex> ilk(mtx_);
-		if(!waiters_.empty())
-		{
-			TaskBase* task=waiters_.back();
-			waiters_.pop_back();
-			task->resume();
-		}
-	}
-
-	void notify_all()
-	{
-		std::unique_lock<mutex> ilk(mtx_);
-		for(TaskBase* task : waiters_)
-		{
-			task->resume();
-		}
-		waiters_.clear();
-	}
-
-	void wait(std::unique_lock<mutex>& lk)
-	{
-		TaskBase* task=this_task::self();
-		if(task)
-		{
-			task->suspend();
-			add_task_to_waiter_list(task);
-			lk.unlock();
-			this_task::yield();
-			lk.lock();
-		}
-		else
-		{
-			throw invalid_task();
-		}
-	}
-
-	template<typename Pred>
-	void wait(std::unique_lock<mutex>& lk, Pred&& pred)
-	{
-		while (!pred())
-		{
-			wait(lk);
-		}
-	}
-
-	template<typename Pred>
-	void wait_for(std::unique_lock<mutex>& lk, const std::chrono::system_clock::duration& expiry_time)
-	{
-		TaskBase* task=this_task::self();
-		if(task)
-		{
-			task->suspend();
-			add_task_to_waiter_list(task);
-			lk.unlock();
-			this_task::sleep_for(expiry_time);
-			cancel_timer();
-			lk.lock();
-			erase_waiter(task);
-		}
-		else
-		{
-			throw invalid_task();
-		}
-	}
-
-	template<typename Pred>
-	void wait_until(std::unique_lock<mutex>& lk, const std::chrono::system_clock::time_point& expiry_time)
-	{
-		TaskBase* task=this_task::self();
-		if(task)
-		{
-			task->suspend();
-			add_task_to_waiter_list(task);
-			lk.unlock();
-			this_task::sleep_until(expiry_time);
-			cancel_timer();
-			lk.lock();
-			erase_waiter(task);
-		}
-		else
-		{
-			throw invalid_task();
-		}
-	}
-
-private:
-	mutex mtx_;
-	std::vector<TaskBase*> waiters_;
-
-	void add_task_to_waiter_list(TaskBase* task)
-	{
-		std::unique_lock<mutex> ilk(mtx_);
-		waiters_.push_back(task);
-	}
-	void erase_waiter(TaskBase* task)
-	{
-		std::unique_lock<mutex> ilk(mtx_);
-		for(auto it=waiters_.begin(); it!=waiters_.end(); ++it)
-		{
-			if(*it==task)
-			{
-				waiters_.erase(it);
-				break;
-			}
-		}
-	}
-	void cancel_timer()
-	{
-		WorkThreadBase* thread = ITaskScheduler::this_thread();
-		if (thread)
-		{
-			thread->wakeup_task();
-		}
-	}
-};
 
 
 template<typename R, typename A>
