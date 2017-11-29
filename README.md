@@ -99,6 +99,23 @@ scheduler.push(task1);
 任务task2将在任务task1执行完毕后执行。
 函数pipeline可以简化任务链的创建。
 
+#### 任务内的事件循环
+
+可以在比较复杂的任务内使用事件循环。当没有事件时，事件循环会主动让路。当有新事件时，任务会被唤醒。
+可以在任务外向事件循环投送函数。
+
+类task::event_loop用于创建事件循环。
+
+- post(handler)		请求事件循环执行一个函数
+- stop()				停止事件循环
+- run()				启动事件循环
+- set_timer(expire_time, handler)
+					创建定时器，请求事件循环在某个时间执行一个函数
+- cancel_timer(timer_id)
+					撤销定时器
+- reset_timer(timer_id, expire_time)
+					重置定时器的触发时间
+
 ### 性能
 
 在 E6320 处理器（现在很难找到比这还差的机器了吧？）上进行性能测试:

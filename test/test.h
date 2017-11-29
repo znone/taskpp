@@ -21,6 +21,7 @@ private:
 	void test_cancel();
 	void test_performance();
 	void test_yield();
+	void test_timer();
 };
 
 #endif //_TEST_MYSQL_H_

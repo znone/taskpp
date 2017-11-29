@@ -27,12 +27,12 @@ public:
 	sync_queue& operator=(const sync_queue&) = delete;
 	sync_queue(sync_queue&& src) : base_(std::move(src)), max_size_(src.max_size_) { }
 
-	boost::queue_op_status try_push(const value_type& elem)
+	boost::queue_op_status try_push(const value_type& elem, bool force=false)
 	{
 		boost::unique_lock<boost::mutex> lk(this->mtx_);
 		if(this->closed(lk))
 			return boost::queue_op_status::closed;
-		else if(this->data_.size()>=max_size_)
+		else if(!force && this->data_.size()>=max_size_)
 			return boost::queue_op_status::full;
 		this->data_.push_back(elem);
 		this->notify_not_empty_if_needed(lk);
@@ -60,7 +60,7 @@ public:
 		if (size>remain)
 		{
 			devector<ValueType> temp;
-			size = size / n + 1;
+			size = n ? size / n + 1 : 1;
 			temp.insert(temp.end(), this->data_.begin(), this->data_.begin() + size);
 			this->data_.pop_front_n(size);
 			lk.unlock();
@@ -99,11 +99,11 @@ public:
 	sync_priority_queue& operator=(const sync_priority_queue&) = delete;
 	sync_priority_queue(sync_priority_queue&& src) : base_(std::move(src)), max_size_(src.max_size_) { }
 
-	boost::queue_op_status try_push(const value_type& elem)
+	boost::queue_op_status try_push(const value_type& elem, bool force=false)
 	{
 		boost::unique_lock<boost::mutex> lk(this->mtx_);
 		if(this->closed(lk)) return boost::queue_op_status::closed;
-		else if(this->data_.size()>=max_size_) return boost::queue_op_status::full;
+		else if(!force && this->data_.size()>=max_size_) return boost::queue_op_status::full;
 		this->data_.push(elem);
 		this->notify_not_empty_if_needed(lk);
 		return boost::queue_op_status::success;

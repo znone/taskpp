@@ -1,10 +1,12 @@
 #include "test.h"
 #include <fstream>
 #include <array>
+#include <iomanip>
 #include <task/task.h>
 #include <task/mutex.h>
 #include <task/condition_variable.h>
 #include <task/blocking_queue.h>
+#include <task/event_loop.h>
 
 using namespace std;
 using namespace task;
@@ -23,6 +25,7 @@ TestTask::TestTask()
 	TEST_ADD(TestTask::test_cancel)
 	TEST_ADD(TestTask::test_performance)
 	TEST_ADD(TestTask::test_yield)
+	TEST_ADD(TestTask::test_timer)
 }
 
 void TestTask::test_simple()
@@ -132,7 +135,7 @@ void TestTask::test_condition_variable()
 		cv.wait(lk, [&str]() { return !str.empty(); } );
 		str+="second task.";
 	});
-		this_thread::sleep_for(chrono::seconds(1));
+	this_thread::sleep_for(chrono::seconds(1));
 	cv.notify_one();
 	this_thread::sleep_for(chrono::seconds(1));
 	str+="first task.";
@@ -160,6 +163,7 @@ void TestTask::test_blocking_message()
 			message>>recv_msg;
 		});
 	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	scheduler.join_all();
 	TEST_ASSERT_EQUALS_OBJ(send_msg, recv_msg);
 }
@@ -192,6 +196,7 @@ void TestTask::test_proirity()
 		ready=true;
 	}
 	cv.notify_one();
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	scheduler.join_all();
 	
 	vector<int> r {10, 4, 1};
@@ -232,11 +237,12 @@ void TestTask::test_cancel()
 void TestTask::test_performance()
 {
 	TaskScheduler<> scheduler;
-	const size_t n = 1000000;
+	const uint64_t n = 1000000;
 	atomic<size_t> c(0);
 	chrono::high_resolution_clock::time_point begin=chrono::high_resolution_clock::now();
 	for(size_t i=0; i!=n; i++)
 		scheduler.push([&c]() { ++c;  return log(sin(0.5)); }, 0);
+	this_thread::sleep_for(chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
 	chrono::high_resolution_clock::duration lost = end - begin;
@@ -248,11 +254,11 @@ void TestTask::test_performance()
 void TestTask::test_yield()
 {
 	TaskScheduler<> scheduler;
-	const size_t n = 1000;
-	const size_t m =100000;
-	atomic<size_t> c(0);
+	const uint64_t n = 1000;
+	const uint64_t m =100000;
+	atomic<int64_t> c(0);
 	chrono::high_resolution_clock::time_point begin=chrono::high_resolution_clock::now();
-	for(size_t i=0; i!=n; i++)
+	for(int64_t i=0; i!=n; i++)
 		scheduler.push([m, &c]() { 
 			for(size_t i=0; i!=m; i++)
 			{
@@ -260,12 +266,38 @@ void TestTask::test_yield()
 				this_task::yield();
 			}
 	});
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
 	chrono::high_resolution_clock::duration lost = end - begin;
 	TEST_ASSERT_EQUALS_OBJ(n*m, c);
 	cout << "switch " << n << " tasks " << m << " times cost time:" << lost.count() << "ns.";
 	cout << " each switch cost time: " << lost.count()/(n*m) << "ns." << endl;
+}
+
+void TestTask::test_timer()
+{
+	TaskScheduler<> scheduler;
+	size_t count=5;
+	scheduler.push([&count]() {
+		event_loop loop;
+		int timer_id;
+		timer_id=loop.set_timer(boost::chrono::seconds(1), true, [&]() mutable {
+			time_t t=boost::chrono::system_clock::to_time_t(boost::chrono::system_clock::now());
+			char str[1024];
+			strftime(str, 1024, "%c", localtime(&t));
+			cout << str << endl;
+			--count;
+			if(count==0)
+			{
+				loop.cancel_timer(timer_id);
+				loop.stop();
+			}
+		});
+		loop.run();
+	});
+	scheduler.join_all();
+	TEST_ASSERT_EQUALS_OBJ(count, 0);
 }
 
 int main(int argc, char* argv[])

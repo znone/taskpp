@@ -17,37 +17,47 @@ public:
 
 	void notify_one()
 	{
-		std::unique_lock<mutex> ilk(mtx_);
-		if(!waiters_.empty())
+		TaskBase* task = nullptr;
 		{
-			TaskBase* task=waiters_.back();
-			waiters_.pop_back();
-			task->resume();
+			std::unique_lock<mutex> ilk(mtx_);
+			if (!waiters_.empty())
+			{
+				task = waiters_.back();
+				waiters_.pop_back();
+			}
 		}
+		if(task) task->resume();
 	}
 
 	void notify(TaskBase* task)
 	{
-		std::unique_lock<mutex> ilk(mtx_);
-		if(!waiters_.empty())
+		bool erased = false;
 		{
-			auto it=std::find(waiters_.begin(), waiters_.end(), task);
-			if(it!=waiters_.end())
+			std::unique_lock<mutex> ilk(mtx_);
+			if (!waiters_.empty())
 			{
-				waiters_.erase(it);
-				task->resume();
+				auto it = std::find(waiters_.begin(), waiters_.end(), task);
+				if (it != waiters_.end())
+				{
+					waiters_.erase(it);
+					erased = true;
+				}
 			}
 		}
+		if(erased) task->resume();
 	}
 
 	void notify_all()
 	{
-		std::unique_lock<mutex> ilk(mtx_);
-		for(TaskBase* task : waiters_)
+		std::vector<TaskBase*> temp;
+		{
+			std::unique_lock<mutex> ilk(mtx_);
+			temp.swap(waiters_);
+		}
+		for(TaskBase* task : temp)
 		{
 			task->resume();
 		}
-		waiters_.clear();
 	}
 
 	void wait(std::unique_lock<mutex>& lk)
@@ -68,7 +78,7 @@ public:
 	}
 
 	template<typename Pred>
-	void wait(std::unique_lock<mutex>& lk, Pred pred)
+	void wait(std::unique_lock<mutex>& lk, Pred&& pred)
 	{
 		while (!pred())
 		{
@@ -76,36 +86,16 @@ public:
 		}
 	}
 
-	std::cv_status wait_for(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::duration& expiry_time)
-	{
-		return wait_until(lk, boost::chrono::steady_clock::now()+expiry_time);
-	}
-
-	template<typename Pred>
-	bool wait_for(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::duration& expiry_time, Pred pred)
-	{
-		return wait_until(lk, boost::chrono::steady_clock::now()+expiry_time, pred);
-	}
-
-	std::cv_status wait_until(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::time_point& expiry_time)
+	void wait_for(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::duration& expiry_time)
 	{
 		TaskBase* task=this_task::self();
-		std::cv_status status;
 		if(task)
 		{
 			task->suspend();
 			add_task_to_waiter_list(task);
 			lk.unlock();
-			this_task::sleep_until(expiry_time);
-			if(boost::chrono::steady_clock::now()<expiry_time)
-			{
-				status=std::cv_status::no_timeout;
-				cancel_timer();
-			}
-			else
-			{
-				status=std::cv_status::timeout;
-			}
+			this_task::sleep_for(expiry_time);
+			cancel_timer();
 			lk.lock();
 			erase_waiter(task);
 		}
@@ -113,18 +103,25 @@ public:
 		{
 			throw invalid_task();
 		}
-		return status;
 	}
 
-	template<typename Pred>
-	bool wait_until(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::time_point& expiry_time, Pred pred)
+	void wait_until(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::time_point& expiry_time)
 	{
-		while(!pred())
+		TaskBase* task=this_task::self();
+		if(task)
 		{
-			if(wait_until(lk, expiry_time)==std::cv_status::timeout)
-				return pred();
+			task->suspend();
+			add_task_to_waiter_list(task);
+			lk.unlock();
+			this_task::sleep_until(expiry_time);
+			cancel_timer();
+			lk.lock();
+			erase_waiter(task);
 		}
-		return true;
+		else
+		{
+			throw invalid_task();
+		}
 	}
 
 private:
