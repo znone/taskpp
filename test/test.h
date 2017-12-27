@@ -19,9 +19,11 @@ private:
 	void test_condition_variable();
 	void test_blocking_message();
 	void test_cancel();
-	void test_performance();
+	void test_create();
 	void test_yield();
 	void test_timer();
+	void test_shared_stack();
+	void test_concurrency();
 };
 
 #endif //_TEST_MYSQL_H_

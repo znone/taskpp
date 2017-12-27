@@ -7,6 +7,7 @@
 #include <task/condition_variable.h>
 #include <task/blocking_queue.h>
 #include <task/event_loop.h>
+#include <task/shared_stack.h>
 
 using namespace std;
 using namespace task;
@@ -20,12 +21,18 @@ TestTask::TestTask()
 	TEST_ADD(TestTask::test_sleep)
 	TEST_ADD(TestTask::test_proirity)
 	TEST_ADD(TestTask::test_mutex)
+	TEST_ADD(TestTask::test_shared_stack)
 	TEST_ADD(TestTask::test_condition_variable)
 	TEST_ADD(TestTask::test_blocking_message)
 	TEST_ADD(TestTask::test_cancel)
-	TEST_ADD(TestTask::test_performance)
-	TEST_ADD(TestTask::test_yield)
 	TEST_ADD(TestTask::test_timer)
+#ifndef _DEBUG
+	TEST_ADD(TestTask::test_create)
+	TEST_ADD(TestTask::test_yield)
+#if defined(_M_X64) || defined(__x86_64__)
+	TEST_ADD(TestTask::test_concurrency)
+#endif
+#endif
 }
 
 void TestTask::test_simple()
@@ -234,7 +241,7 @@ void TestTask::test_cancel()
 	TEST_ASSERT_EQUALS(1, a);
 }
 
-void TestTask::test_performance()
+void TestTask::test_create()
 {
 	TaskScheduler<> scheduler;
 	const uint64_t n = 1000000;
@@ -242,7 +249,8 @@ void TestTask::test_performance()
 	chrono::high_resolution_clock::time_point begin=chrono::high_resolution_clock::now();
 	for(size_t i=0; i!=n; i++)
 		scheduler.push([&c]() { ++c;  return log(sin(0.5)); }, 0);
-	this_thread::sleep_for(chrono::milliseconds(100));
+	while(c!=n)
+		this_thread::sleep_for(chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
 	chrono::high_resolution_clock::duration lost = end - begin;
@@ -256,17 +264,19 @@ void TestTask::test_yield()
 	TaskScheduler<> scheduler;
 	const uint64_t n = 1000;
 	const uint64_t m =100000;
-	atomic<int64_t> c(0);
+	atomic<int64_t> c(0), t(0);
 	chrono::high_resolution_clock::time_point begin=chrono::high_resolution_clock::now();
 	for(int64_t i=0; i!=n; i++)
-		scheduler.push([m, &c]() { 
+		scheduler.push([m, &c, &t]() { 
 			for(size_t i=0; i!=m; i++)
 			{
 				++c;
 				this_task::yield();
 			}
+			++t;
 	});
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	while(t!=n)
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
 	chrono::high_resolution_clock::duration lost = end - begin;
@@ -299,6 +309,83 @@ void TestTask::test_timer()
 	scheduler.join_all();
 	TEST_ASSERT_EQUALS_OBJ(count, 0);
 }
+
+static void print_stack_info()
+{
+	cout<<  "stack size: " << this_task::stack_size() 
+		<< ", remaining " << this_task::remaining_stack() << endl;
+}
+
+static int recfun(int n)
+{
+	char buffer[1024];
+	memset(buffer, 'A', 1024);
+	print_stack_info();
+	this_task::yield();
+	if(n>0) n=recfun(n-1);
+	return n;
+}
+
+void TestTask::test_shared_stack()
+{
+	TaskSchedulerParam param;
+	param.stack_param_.init_size=4*1024;
+	param.stack_param_.capacity=1024*1024;
+
+	TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
+	atomic<int> n(10);
+	scheduler.push([&n]() {
+		print_stack_info();
+		n=recfun(n);
+	});
+	while((int)n>0)
+		this_thread::sleep_for(chrono::milliseconds(100));
+	scheduler.join_all();
+}
+
+void TestTask::test_concurrency()
+{
+	const size_t n = 1000000;
+	TaskSchedulerParam param;
+	param.max_tasks_=n;
+	param.stack_param_.init_size=1024;
+	param.stack_param_.capacity=1024*1024;
+
+	TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
+	atomic<size_t> counter(0);
+	atomic<size_t> total_tasks(0), total_stacks(0);
+	atomic<bool> stoped(false);
+	thread watch([&]() {
+		while(!stoped)
+		{
+			printf("current total tasks: %8lu, used stack: %8luMB\r", 
+				(size_t)total_tasks, (size_t)total_stacks/1024/1024);
+			this_thread::sleep_for(chrono::seconds(1));
+		}
+	});
+	for(size_t i=0; i!=n; i++)
+	{
+		scheduler.push([&]() {
+			++counter;
+			++total_tasks;
+			total_stacks+=this_task::stack_size();
+
+			for(size_t i=0; i!=20; i++)
+			{
+				this_task::sleep_for(boost::chrono::seconds(1));
+			}
+
+			total_stacks-=this_task::stack_size();
+			--total_tasks;
+		});
+	}
+	while(counter!=n)
+		this_thread::sleep_for(chrono::seconds(1));
+	scheduler.join_all();
+	stoped=true;
+	watch.join();
+}
+
 
 int main(int argc, char* argv[])
 {

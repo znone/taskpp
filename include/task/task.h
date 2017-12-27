@@ -12,7 +12,7 @@
 #include <chrono>
 #include <mutex>
 #include <boost/version.hpp>
-#include <boost/thread/thread.hpp>
+#include <boost/thread/thread_only.hpp>
 #include <boost/thread/shared_mutex.hpp>
 
 #if BOOST_VERSION<=106000
@@ -21,9 +21,9 @@
 #include <boost/context/detail/fcontext.hpp>
 #endif
 #include <boost/context/stack_context.hpp>
-#include <boost/context/fixedsize_stack.hpp>
 
 #include "detail/task_queue.h"
+#include "fixed_stack.h"
 
 #if __cplusplus>=201103L || ( defined(_MSC_VER) && _MSC_VER>=1900 )
 #define THREAD_LOCAL thread_local
@@ -72,21 +72,19 @@ struct invalid_task : public std::exception
 
 namespace detail
 {
+#pragma pack(push, stack_align) 
 	struct coroutine_context
 	{
 		fcontext_t sink_;
 		fcontext_t mine_;
-		boost::context::stack_context stack_;
+		stack_context stack_;
 		ITask* task_;
 
-		static coroutine_context* create_coroutine(ITask* task, boost::context::stack_context& stack)
+		static coroutine_context* create_coroutine(ITask* task, stack_context& stack)
 		{
-			coroutine_context* coroutine=reinterpret_cast<coroutine_context*>(stack.sp);
-			--coroutine;
+			coroutine_context* coroutine=static_cast<coroutine_context*>(stack.task_data);
 			new(coroutine) coroutine_context();
 			coroutine->stack_=stack;
-			stack.sp=coroutine;
-			stack.size-=sizeof(coroutine_context);
 			coroutine->sink_=nullptr;
 			coroutine->mine_=make_fcontext(stack.sp, stack.size, &coroutine_context::routine);
 			coroutine->task_=task;
@@ -95,13 +93,16 @@ namespace detail
 
 		bool resume()
 		{
+			bool ret=false;
 #if BOOST_VERSION<=106000
-			return jump_fcontext(&sink_, mine_, reinterpret_cast<intptr_t>(this), false)!=0;
+			ret=jump_fcontext(&sink_, mine_, reinterpret_cast<intptr_t>(this), false)!=0;
 #else
 			transfer_t transfer=jump_fcontext(mine_, this);
 			mine_=transfer.fctx;
-			return transfer.data!=nullptr;
+			ret= transfer.data!=nullptr;
 #endif //BOOST_VERSION
+			check_stack_overflow();
+			return ret;
 		}
 
 		void yield()
@@ -135,24 +136,38 @@ namespace detail
 			jump_fcontext(_this->sink_, NULL);
 		}
 #endif //BOOST_VERSION
+
+		size_t stack_size() const { return stack_.size; }
+
+		size_t remaining_stack() const
+		{
+			return (intptr_t)mine_ - ((intptr_t)stack_.sp-stack_.size);
+		}
+
+private:
+		void check_stack_overflow() const
+		{
+			if((intptr_t)mine_ < ((intptr_t)stack_.sp-stack_.size)) 
+				abort();
+		}
 	};
 
 	class WorkThreadBase;
 }
+#pragma pack(pop, stack_align) 
 
 class TaskBase : public ITask
 {
 public:
 	explicit TaskBase(int priority) 
 		: priority_(priority), suspended_(false), canceled_(false), 
-		ccoroutine_(nullptr), thread_(nullptr)
+		coroutine_(nullptr), thread_(nullptr)
 	{ }
 	int priority() const { return priority_; }
 
-	bool invoke(detail::coroutine_context* data)
+	void switch_context(detail::coroutine_context* data)
 	{
-		ccoroutine_=data;
-		return data->resume();
+		coroutine_=data;
 	}
 	void cancel() 
 	{ 
@@ -167,10 +182,16 @@ public:
 	bool suspended() const { return suspended_; }
 	void suspend() { suspended_ = true;  }
 	void resume();
-	bool enabled_coroutine() const { return ccoroutine_!=nullptr; }
+	bool enabled_coroutine() const { return coroutine_!=nullptr; }
+	detail::coroutine_context* coroutine() { return coroutine_; }
+	size_t stack_size() const { return coroutine_ ? coroutine_->stack_size() : 0; }
+	void* stack_bottom() const
+	{
+		return coroutine_ ? coroutine_->stack_.sp : nullptr;
+	}
 
 private:
-	detail::coroutine_context* ccoroutine_;
+	detail::coroutine_context* coroutine_;
 	void yield();
 	friend void this_task::yield();
 
@@ -211,6 +232,7 @@ public:
 	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) = 0;
 	virtual void wakeup_task() =0;
 	virtual void wakeup_queue() = 0;
+	virtual void* get_stack_allocator()=0;
 protected:
 	TaskBase* current_task_ { nullptr };
 };
@@ -383,11 +405,11 @@ struct TaskSchedulerParam
 {
 	size_t max_threads_;
 	size_t max_tasks_;
-	size_t stack_size_;
-	bool disable_coroutine_;
+	stack_param stack_param_;
+	uint32_t alarm_remaining_; //If the stack remaining space is less than this value, alarm
 
 	TaskSchedulerParam()
-		: max_tasks_(1024), stack_size_(0), disable_coroutine_(false)
+		: max_tasks_(1024), alarm_remaining_(128)
 	{
 		max_threads_ = std::thread::hardware_concurrency() * 2;
 	}
@@ -397,22 +419,16 @@ struct TaskSchedulerParam
 namespace detail
 {
 
-template<class Queue, class ThreadEntry=EmptyEntry, class StackAllocator=boost::context::fixedsize_stack>
+template<class Queue, class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
 class TaskScheduler : public ITaskScheduler
 {
 public:
 	typedef typename StackAllocator::traits_type stack_traits_type;
-	TaskScheduler(bool disable_coroutine=false)
-	{
-		param_.disable_coroutine_ = disable_coroutine;
-		if(param_.stack_size_==0) 
-			param_.stack_size_=stack_traits_type::default_size();
-	}
-	TaskScheduler(const TaskSchedulerParam& param)
+	TaskScheduler() = default;
+	explicit TaskScheduler(const TaskSchedulerParam& param)
 		: param_(param)
 	{
-		if(param_.stack_size_==0) 
-			param_.stack_size_=stack_traits_type::default_size();
+		check_param();
 	}
 	TaskScheduler(const TaskScheduler&) = delete;
 	TaskScheduler& operator=(const TaskScheduler&) = delete;
@@ -423,6 +439,14 @@ public:
 	}
 
 	const TaskSchedulerParam& param() const { return param_;  }
+	void set_param(const TaskSchedulerParam& param)
+	{
+		if (threads_.empty())
+		{
+			param_ = param;
+			check_param();
+		}
+	}
 
 	void create_threads(size_t thread_num=std::thread::hardware_concurrency())
 	{
@@ -491,7 +515,7 @@ private:
 	{
 	public:
 		WorkThread(TaskScheduler* scheduler)
-			: scheduler_(scheduler), stack_allocator_(scheduler->param().stack_size_ + sizeof(coroutine_context)),
+			: scheduler_(scheduler), stack_allocator_(scheduler->param().stack_param_),
 			task_queue_(scheduler->param().max_tasks_)
 		{
 			stealing();
@@ -523,6 +547,7 @@ private:
 		}
 		virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) override
 		{
+			current_task_->suspend();
 			sleeping_tasks_.emplace(expiry_time, current_task_);
 		}
 		virtual void wakeup_task()
@@ -546,15 +571,20 @@ private:
 			}
 		}
 
+		virtual void* get_stack_allocator()
+		{
+			return &stack_allocator_;
+		}
+
 	private:
-		typedef std::list<std::pair<TaskPtr, coroutine_context*>> executing_list;
+		typedef std::list<TaskPtr> executing_list;
 		Queue task_queue_;
 		std::multimap<boost::chrono::steady_clock::time_point, TaskBase*> sleeping_tasks_;
 		std::atomic<bool> stoped_ { false };
 		TaskScheduler* scheduler_;
 		std::thread thread_;
 		StackAllocator stack_allocator_;
-		std::vector<boost::context::stack_context> stacks_;
+		std::vector<stack_context> stacks_;
 
 		void run()
 		{
@@ -571,15 +601,26 @@ private:
 				do
 				{
 					suspend_time = wakeup_tasks();
-					size_t actived_count = resume_workers(executing_tasks);
+					actived_count = resume_workers(executing_tasks);
 					if (task_queue_.empty())
 						stealing();
-				} while (actived_count > 0 && task_queue_.empty());
+				} while (actived_count > 0 && task_queue_.empty() && scheduler_->total_queue_size()==0);
 				if (!pull(task, actived_count==0, suspend_time) && executing_tasks.empty())
 					break;
 				if (task)
 				{
-					if (scheduler_->param().disable_coroutine_)
+					stack_context stack;
+					try
+					{
+						stack=allocate_stack();
+					}
+					catch (std::bad_alloc&)
+					{
+						task_queue_.push(task);
+						continue;
+					}
+
+					if (stack.sp==nullptr)
 					{
 						current_task_ = task.get();
 						try
@@ -593,17 +634,11 @@ private:
 					}
 					else
 					{
-						boost::context::stack_context stack=allocate_stack();
 						current_task_ = task.get();
 						coroutine_context* coroutine=coroutine_context::create_coroutine(current_task_, stack);
-						if (current_task_->invoke(coroutine))
-						{
-							executing_tasks.emplace_back(task, coroutine);
-						}
-						else
-						{
-							stacks_.push_back(coroutine->stack_);
-						}
+						current_task_->switch_context(coroutine);
+						if (resume_coroutine(coroutine, true))
+							executing_tasks.emplace_back(task);
 						current_task_ = nullptr;
 					}
 					if(task_queue_.closed())
@@ -621,6 +656,7 @@ private:
 			stoped_ = true;
 			//printf("thread %d is stoped\n", std::this_thread::get_id());
 			TaskScheduler::this_thread_ = nullptr;
+			release_stacks();
 		}
 
 		bool pull(TaskPtr& task, bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
@@ -659,8 +695,8 @@ private:
 			size_t actived_count=0;
 			for(auto it=workers.begin(); it!=workers.end(); )
 			{
-				coroutine_context* coroutine=it->second;
-				TaskBase* task=it->first.get();
+				TaskBase* task=it->get();
+				coroutine_context* coroutine= task->coroutine();
 				if (task->suspended())
 				{
 					++it;
@@ -668,26 +704,42 @@ private:
 				else
 				{
 					current_task_ = task;
-					bool running=coroutine->resume();
-					current_task_=nullptr;
-					if(!running)
-					{
-						it=workers.erase(it);
-						stacks_.push_back(coroutine->stack_);
-					}
-					else
+					if(resume_coroutine(coroutine, false))
 					{
 						++it;
 						++actived_count;
 					}
+					else
+					{
+						it=workers.erase(it);
+					}
+					current_task_=nullptr;
 				}
 			}
 			return actived_count;
 		}
 
-		boost::context::stack_context allocate_stack()
+		bool resume_coroutine(coroutine_context* coroutine, bool first)
 		{
-			boost::context::stack_context stack;
+			if(!first)
+				stack_allocator_.before_resume_task(coroutine->stack_, coroutine->mine_);
+			bool running=coroutine->resume();
+			if(running)
+			{
+				stack_allocator_.after_suspend_task(coroutine->stack_, coroutine->mine_);
+			}
+			else
+			{
+				stack_context stack=coroutine->stack_;
+				stack_allocator_.reset_stack(stack);
+				stacks_.push_back(stack);
+			}
+			return running;
+		}
+
+		stack_context allocate_stack()
+		{
+			stack_context stack;
 			if(stacks_.empty())
 				stack=stack_allocator_.allocate();
 			else
@@ -700,10 +752,11 @@ private:
 
 		void release_stacks()
 		{
-			for(boost::context::stack_context& stack : stacks_)
+			for(stack_context& stack : stacks_)
 			{
 				stack_allocator_.deallocate(stack);
 			}
+			stacks_.clear();
 		}
 
 		boost::chrono::steady_clock::time_point wakeup_tasks()
@@ -734,6 +787,15 @@ private:
 	mutable boost::shared_mutex threads_mutex_;
 	Queue task_queue_;
 	TaskSchedulerParam param_;
+
+	size_t total_queue_size()
+	{
+		size_t count=task_queue_.size();
+		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
+		for(std::unique_ptr<WorkThread>& thread : threads_)
+			count+=thread->queue_size();
+		return count;
+	}
 
 	void adjust_threads(size_t n=1)
 	{
@@ -901,6 +963,7 @@ private:
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		if (threads_.empty()) return;
 		auto it = threads_.begin();
+		size_t actived=0;
 		while (1)
 		{
 			if (task == nullptr)
@@ -910,12 +973,29 @@ private:
 			}
 
 			std::unique_ptr<WorkThread>& thread = *it;
-			if (thread->push(task))
-				task = nullptr;
+			if (!thread->stoped())
+			{
+				++actived;
+				if(thread->push(task))
+					task = nullptr;
+			}
 			++it;
 			if (it == threads_.end())
+			{
+				if(actived==0) break;
+				actived=0;
 				it = threads_.begin();
+			}
 		}
+	}
+
+	void check_param()
+	{
+		if (param_.stack_param_.init_size == 0)
+			param_.stack_param_.init_size = StackAllocator::default_size();
+		if(param_.stack_param_.capacity==0) 
+			param_.stack_param_.capacity=(uint32_t)stack_traits_type::default_size()*16;
+		param_.stack_param_.reservation=sizeof(detail::coroutine_context);
 	}
 
 };
@@ -943,32 +1023,32 @@ inline void TaskBase::resume()
 
 inline void TaskBase::yield()
 {
-	if (ccoroutine_)
+	if (coroutine_)
 	{
 		thread_ = detail::ITaskScheduler::this_thread();
-		ccoroutine_->yield();
+		coroutine_->yield();
 		thread_=nullptr;
 	}
 	if (canceled_) throw task_canceled();
 }
 
 
-template<class ThreadEntry=EmptyEntry, class StackAllocator=boost::context::fixedsize_stack>
+template<class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
 class PriorityTaskScheduler : public detail::TaskScheduler <detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry, StackAllocator>
 {
-	typedef detail::TaskScheduler<detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry> base_;
+	typedef detail::TaskScheduler<detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry, StackAllocator> base_;
 public:
-	PriorityTaskScheduler(bool disable_coroutine = false) : base_(disable_coroutine)  { }
-	explicit PriorityTaskScheduler(const TaskSchedulerParam& config) : base_(config) { }
+	PriorityTaskScheduler() = default;
+	explicit PriorityTaskScheduler(const TaskSchedulerParam& param) : base_(param) { }
 };
 
-template<class ThreadEntry=EmptyEntry, class StackAllocator=boost::context::fixedsize_stack>
+template<class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
 class TaskScheduler : public detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry, StackAllocator>
 {
-	typedef detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry> base_;
+	typedef detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry, StackAllocator> base_;
 public:
-	TaskScheduler(bool disable_coroutine = false) : base_(disable_coroutine) { }
-	explicit TaskScheduler(const TaskSchedulerParam& config) : base_(config) { }
+	TaskScheduler() = default;
+	explicit TaskScheduler(const TaskSchedulerParam& param) : base_(param) { }
 };
 
 struct io_result
@@ -1008,7 +1088,7 @@ namespace this_task
 	template<typename Function, typename... Args>
 	inline io_result await_io(Function&& fun, Args&&... args)
 	{
-		TaskBase* task=this_task::self();
+		TaskBase* task=self();
 		io_result result;
 		fun(std::forward<Args>(args)..., [task, &result](const boost::system::error_code& error, std::size_t bytes_transferred ) mutable {
 			result.error=error;
@@ -1019,8 +1099,19 @@ namespace this_task
 		yield();
 		return result;
 	}
-}
 
+	void* stack_top();
+	inline size_t stack_size() { return self()->stack_size(); }
+	inline size_t remaining_stack()
+	{
+		return (intptr_t)stack_top()-((intptr_t)self()->stack_bottom()-stack_size());
+	}
+	inline void check_stack_overflow()
+	{
+		if((intptr_t)stack_top() < ((intptr_t)self()->stack_bottom()-stack_size()))
+			abort();
+	}
+}
 
 template<typename R, typename A>
 class FollowTask : public Task<R>
@@ -1070,5 +1161,9 @@ inline auto pipeline(Scheduler& scheduler, F1&& f1, Other&&... other)
 }
 
 }
+
+#ifdef __GNUC__
+#include "inc/stack_top_posix.inc"
+#endif
 
 #endif //_TASK_H_
