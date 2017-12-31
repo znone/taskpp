@@ -23,6 +23,7 @@ private:
 	void test_yield();
 	void test_timer();
 	void test_shared_stack();
+	void test_call_in_new_stack();
 	void test_concurrency();
 };
 

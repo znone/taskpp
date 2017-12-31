@@ -3,9 +3,9 @@
 
 #include <boost/thread/concurrent_queues/sync_priority_queue.hpp>
 #include <boost/thread/concurrent_queues/sync_queue.hpp>
-#include "devector.h"
+#include <taskpp/detail/devector.h>
 
-namespace task
+namespace taskpp
 {
 
 namespace detail

@@ -3,7 +3,7 @@
 
 #include <boost/context/fixedsize_stack.hpp>
 
-namespace task
+namespace taskpp
 {
 
 #if defined(_M_X64) || defined(__x86_64__)
@@ -29,7 +29,7 @@ struct stack_param
 	uint32_t capacity;
 	uint32_t reservation;
 
-	stack_param(): init_size(boost::context::stack_traits::default_size()), 
+	stack_param(): init_size((uint32_t)boost::context::stack_traits::default_size()), 
 		capacity(0), reservation(0)
 	{
 	}
@@ -50,7 +50,7 @@ inline ptrdiff_t ptrdiff(void* from, void* to)
 	return reinterpret_cast<intptr_t>(to)-reinterpret_cast<intptr_t>(from);
 }
 
-inline void copy_stack(boost::context::stack_context& dest, const boost::context::stack_context& src, uint32_t size)
+inline void copy_stack(boost::context::stack_context& dest, const boost::context::stack_context& src, ptrdiff_t size)
 {
 	memcpy(static_cast<char*>(dest.sp)-size, static_cast<char*>(src.sp)-size, size);
 }

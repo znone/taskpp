@@ -14,16 +14,10 @@
 #include <boost/version.hpp>
 #include <boost/thread/thread_only.hpp>
 #include <boost/thread/shared_mutex.hpp>
-
-#if BOOST_VERSION<=106000
-#include <boost/context/fcontext.hpp>
-#else
-#include <boost/context/detail/fcontext.hpp>
-#endif
 #include <boost/context/stack_context.hpp>
-
-#include "detail/task_queue.h"
-#include "fixed_stack.h"
+#include <taskpp/detail/task_context.h>
+#include <taskpp/detail/task_queue.h>
+#include <taskpp/fixed_stack.h>
 
 #if __cplusplus>=201103L || ( defined(_MSC_VER) && _MSC_VER>=1900 )
 #define THREAD_LOCAL thread_local
@@ -35,28 +29,21 @@
 #error Compiler do not supported TLS
 #endif //C++11
 
-namespace task
+namespace taskpp
 {
 
-class ITask
+class i_task
 {
 public:
-	virtual ~ITask() { }
+	virtual ~i_task() { }
 	virtual void execute()=0;
 };
 
-class TaskBase;
-
-#if BOOST_VERSION<=106000
-using namespace boost::context;
-#else
-using namespace boost::context::detail;
-#endif
-
+class base_task;
 
 namespace this_task
 {
-	TaskBase* self();
+	base_task* self();
 	void yield();
 }
 
@@ -72,94 +59,62 @@ struct invalid_task : public std::exception
 
 namespace detail
 {
-#pragma pack(push, stack_align) 
-	struct coroutine_context
+
+struct coroutine_context : public base_context
+{
+	stack_context stack_;
+	i_task* task_;
+
+	coroutine_context(i_task* task, stack_context& stack) 
+		: base_context(stack.sp, stack.size), stack_(stack), task_(task)
 	{
-		fcontext_t sink_;
-		fcontext_t mine_;
-		stack_context stack_;
-		ITask* task_;
+	}
 
-		static coroutine_context* create_coroutine(ITask* task, stack_context& stack)
-		{
-			coroutine_context* coroutine=static_cast<coroutine_context*>(stack.task_data);
-			new(coroutine) coroutine_context();
-			coroutine->stack_=stack;
-			coroutine->sink_=nullptr;
-			coroutine->mine_=make_fcontext(stack.sp, stack.size, &coroutine_context::routine);
-			coroutine->task_=task;
-			return coroutine;
-		}
+	static coroutine_context* create_coroutine(i_task* task, stack_context& stack)
+	{
+		coroutine_context* coroutine=static_cast<coroutine_context*>(stack.task_data);
+		new(coroutine) coroutine_context(task, stack);
+		return coroutine;
+	}
 
-		bool resume()
-		{
-			bool ret=false;
-#if BOOST_VERSION<=106000
-			ret=jump_fcontext(&sink_, mine_, reinterpret_cast<intptr_t>(this), false)!=0;
-#else
-			transfer_t transfer=jump_fcontext(mine_, this);
-			mine_=transfer.fctx;
-			ret= transfer.data!=nullptr;
-#endif //BOOST_VERSION
-			check_stack_overflow();
-			return ret;
-		}
+	bool resume()
+	{
+		bool ret=base_context::resume();
+		check_stack_overflow();
+		return ret;
+	}
 
-		void yield()
-		{
-#if BOOST_VERSION<=106000
-			jump_fcontext(&mine_, sink_, reinterpret_cast<intptr_t>(this), false);
-#else
-			sink_=jump_fcontext(sink_, this).fctx;
-#endif //BOOST_VERSION
-		}
+	size_t stack_size() const { return stack_.size; }
 
-#if BOOST_VERSION<=106000
-		static void routine(intptr_t param)
-		{
-			coroutine_context* _this = reinterpret_cast<coroutine_context*>(param);
-			if (_this->task_)
-			{
-				_this->task_->execute();
-			}
-			jump_fcontext(&_this->mine_, _this->sink_, NULL, false);
-		}
-#else
-		static void routine(transfer_t sink)
-		{
-			coroutine_context* _this = reinterpret_cast<coroutine_context*>(sink.data);
-			_this->sink_=sink.fctx;
-			if (_this->task_)
-			{
-				_this->task_->execute();
-			}
-			jump_fcontext(_this->sink_, NULL);
-		}
-#endif //BOOST_VERSION
-
-		size_t stack_size() const { return stack_.size; }
-
-		size_t remaining_stack() const
-		{
-			return (intptr_t)mine_ - ((intptr_t)stack_.sp-stack_.size);
-		}
+	size_t remaining_stack() const
+	{
+		return (intptr_t)mine_ - ((intptr_t)stack_.sp-stack_.size);
+	}
 
 private:
-		void check_stack_overflow() const
+	virtual void routine_implement() override
+	{
+		if (task_)
 		{
-			if((intptr_t)mine_ < ((intptr_t)stack_.sp-stack_.size)) 
-				abort();
+			task_->execute();
 		}
-	};
+	}
 
-	class WorkThreadBase;
+	void check_stack_overflow() const
+	{
+		if( (intptr_t)mine_ > (intptr_t)stack_.sp ||
+			(intptr_t)mine_ < ((intptr_t)stack_.sp-stack_.size)) 
+			abort();
+	}
+};
+
+class base_work_thread;
 }
-#pragma pack(pop, stack_align) 
 
-class TaskBase : public ITask
+class base_task : public i_task
 {
 public:
-	explicit TaskBase(int priority) 
+	explicit base_task(int priority) 
 		: priority_(priority), suspended_(false), canceled_(false), 
 		coroutine_(nullptr), thread_(nullptr)
 	{ }
@@ -199,20 +154,20 @@ private:
 	std::atomic<bool> canceled_;
 	bool suspended_;
 	int priority_;
-	detail::WorkThreadBase* thread_;
+	detail::base_work_thread* thread_;
 };
 
-typedef std::shared_ptr<TaskBase> TaskPtr;
+typedef std::shared_ptr<base_task> task_ptr;
 
 template<typename T>
-inline TaskPtr task_pointer_cast(const std::shared_ptr<T>& task)
+inline task_ptr task_pointer_cast(const std::shared_ptr<T>& task)
 {
-	return std::dynamic_pointer_cast<TaskBase>(task);
+	return std::dynamic_pointer_cast<base_task>(task);
 }
 
-struct TaskPriority
+struct task_priority
 {
-	bool operator()(const TaskPtr& lhs, const TaskPtr& rhs) const
+	bool operator()(const task_ptr& lhs, const task_ptr& rhs) const
 	{
 		if(!lhs) return false;
 		else if(!rhs) return true; 
@@ -223,33 +178,33 @@ struct TaskPriority
 namespace detail
 {
 
-class WorkThreadBase
+class base_work_thread
 {
 public:
-	virtual ~WorkThreadBase() { }
-	TaskBase* current_task() const { return current_task_; }
+	virtual ~base_work_thread() { }
+	base_task* current_task() const { return current_task_; }
 	virtual void task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) = 0;
 	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) = 0;
 	virtual void wakeup_task() =0;
 	virtual void wakeup_queue() = 0;
 	virtual void* get_stack_allocator()=0;
 protected:
-	TaskBase* current_task_ { nullptr };
+	base_task* current_task_ { nullptr };
 };
 
-class ITaskScheduler
+class i_task_scheduler
 {
 public:
-	virtual ~ITaskScheduler() { }
-	virtual void push(TaskPtr task)=0;
-	static WorkThreadBase* this_thread() { return this_thread_; }
-	static TaskBase* this_task()
+	virtual ~i_task_scheduler() { }
+	virtual void push(task_ptr task)=0;
+	static base_work_thread* this_thread() { return this_thread_; }
+	static base_task* this_task()
 	{
 		if(this_thread_) return this_thread_->current_task();
 		else return nullptr;
 	}
 protected:
-	THREAD_LOCAL static WorkThreadBase* this_thread_;
+	THREAD_LOCAL static base_work_thread* this_thread_;
 };
 
 #ifdef _MSC_VER
@@ -257,23 +212,23 @@ __declspec(selectany)
 #else
 __attribute__((weak))
 #endif
-THREAD_LOCAL WorkThreadBase* ITaskScheduler::this_thread_=nullptr;
+THREAD_LOCAL base_work_thread* i_task_scheduler::this_thread_=nullptr;
 
 }
 
-class ChainTask : public TaskBase
+class chain_task : public base_task
 {
 public:
-	ChainTask(detail::ITaskScheduler& schedule, int priority)
-		: TaskBase(priority), schedule_(schedule)
+	chain_task(detail::i_task_scheduler& schedule, int priority)
+		: base_task(priority), schedule_(schedule)
 	{
 	}
 
-	void next(TaskPtr next_task) { next_task_=next_task; }
+	void next(task_ptr next_task) { next_task_=next_task; }
 
 protected:
-	detail::ITaskScheduler& schedule_;
-	TaskPtr next_task_;
+	detail::i_task_scheduler& schedule_;
+	task_ptr next_task_;
 
 	void push_next()
 	{
@@ -283,14 +238,14 @@ protected:
 };
 
 template<typename R>
-class Task : public ChainTask, public std::enable_shared_from_this<Task<R>>
+class task : public chain_task, public std::enable_shared_from_this<task<R>>
 {
-	template<typename R1, typename A> friend class FollowTask;
+	template<typename R1, typename A> friend class follow_task;
 public:
 	typedef R result_type;
 	template<typename F>
-	Task(detail::ITaskScheduler& schedule, F&& f, int priority) 
-		: ChainTask(schedule, priority), task_(std::forward<F>(f))
+	task(detail::i_task_scheduler& schedule, F&& f, int priority) 
+		: chain_task(schedule, priority), task_(std::forward<F>(f))
 	{
 		fut_=task_.get_future();
 	}
@@ -315,16 +270,16 @@ public:
 	}
 
 	template<typename F>
-	auto next(F&& f) -> std::shared_ptr<Task<decltype(f())>>
+	auto next(F&& f) -> std::shared_ptr<task<decltype(f())>>
 	{
 		typedef decltype(f()) result_type;
-		std::shared_ptr<Task<result_type>> new_task=std::make_shared<Task<result_type>>(schedule_, std::forward<F>(f), priority());
+		std::shared_ptr<task<result_type>> new_task=std::make_shared<task<result_type>>(schedule_, std::forward<F>(f), priority());
 		next_task_=new_task;
 		return new_task;
 	}
 
 	template<typename F>
-	typename std::shared_ptr<Task<typename std::result_of<F(R)>::type>> then(F&& f);
+	typename std::shared_ptr<task<typename std::result_of<F(R)>::type>> then(F&& f);
 
 private:
 	std::packaged_task<R()> task_;
@@ -332,7 +287,7 @@ private:
 
 	void wait_for_future() // valid only in the coroutine
 	{
-		TaskBase* self=this_task::self();
+		base_task* self=this_task::self();
 		if(self && self->enabled_coroutine())
 		{
 			while(fut_.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
@@ -342,13 +297,13 @@ private:
 };
 
 template<>
-class Task<void> : public ChainTask, public std::enable_shared_from_this<Task<void>>
+class task<void> : public chain_task, public std::enable_shared_from_this<task<void>>
 {
 public:
 	typedef void result_type;
 	template<typename F>
-	Task(detail::ITaskScheduler& schedule, F&& f, int priority) 
-		: ChainTask(schedule, priority), task_(std::forward<F>(f)) 
+	task(detail::i_task_scheduler& schedule, F&& f, int priority) 
+		: chain_task(schedule, priority), task_(std::forward<F>(f)) 
 	{
 		fut_=task_.get_future();
 	}
@@ -373,10 +328,10 @@ public:
 	}
 
 	template<typename F>
-	std::shared_ptr<Task<typename std::result_of<F()>::type>> next(F&& f)
+	std::shared_ptr<task<typename std::result_of<F()>::type>> next(F&& f)
 	{
 		typedef typename std::result_of<F()>::type result_type;
-		std::shared_ptr<Task<result_type>> new_task=std::make_shared<Task<result_type>>(schedule_, std::forward<F>(f), priority());
+		std::shared_ptr<task<result_type>> new_task=std::make_shared<task<result_type>>(schedule_, std::forward<F>(f), priority());
 		next_task_=new_task;
 		return new_task;
 	}
@@ -387,7 +342,7 @@ private:
 
 	void wait_for_future() // valid only in the coroutine
 	{
-		TaskBase* self=dynamic_cast<TaskBase*>(this_task::self());
+		base_task* self=dynamic_cast<base_task*>(this_task::self());
 		if(self && self->enabled_coroutine())
 		{
 			while(fut_.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
@@ -397,49 +352,52 @@ private:
 };
 
 template<typename R>
-using TaskSharedPtr=std::shared_ptr<Task<R>>;
+using task_shared_ptr=std::shared_ptr<task<R>>;
 
-struct EmptyEntry { };
+struct empty_entry { };
 
-struct TaskSchedulerParam
+struct task_scheduler_param
 {
 	size_t max_threads_;
 	size_t max_tasks_;
 	stack_param stack_param_;
 	uint32_t alarm_remaining_; //If the stack remaining space is less than this value, alarm
 
-	TaskSchedulerParam()
+	task_scheduler_param()
 		: max_tasks_(1024), alarm_remaining_(128)
 	{
 		max_threads_ = std::thread::hardware_concurrency() * 2;
 	}
-	TaskSchedulerParam(const TaskSchedulerParam&) = default;
+	task_scheduler_param(const task_scheduler_param&) = default;
 };
 
 namespace detail
 {
 
-template<class Queue, class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
-class TaskScheduler : public ITaskScheduler
+template<class Queue, class ThreadEntry=empty_entry, class StackAllocator=fixedsize_stack>
+class task_scheduler : public i_task_scheduler
 {
 public:
 	typedef typename StackAllocator::traits_type stack_traits_type;
-	TaskScheduler() = default;
-	explicit TaskScheduler(const TaskSchedulerParam& param)
+	task_scheduler()
+	{
+		check_param();
+	}
+	explicit task_scheduler(const task_scheduler_param& param)
 		: param_(param)
 	{
 		check_param();
 	}
-	TaskScheduler(const TaskScheduler&) = delete;
-	TaskScheduler& operator=(const TaskScheduler&) = delete;
-	virtual ~TaskScheduler()
+	task_scheduler(const task_scheduler&) = delete;
+	task_scheduler& operator=(const task_scheduler&) = delete;
+	virtual ~task_scheduler()
 	{
 		join_all();
 		threads_.clear();
 	}
 
-	const TaskSchedulerParam& param() const { return param_;  }
-	void set_param(const TaskSchedulerParam& param)
+	const task_scheduler_param& param() const { return param_;  }
+	void set_param(const task_scheduler_param& param)
 	{
 		if (threads_.empty())
 		{
@@ -459,33 +417,33 @@ public:
 	}
 
 	template<typename F>
-	auto create_task(F&& f, int priority=0) -> TaskSharedPtr<decltype(f())>
+	auto create_task(F&& f, int priority=0) -> task_shared_ptr<decltype(f())>
 	{
-		return std::make_shared<Task<decltype(f())>>(*this, std::forward<F>(f), priority);
+		return std::make_shared<task<decltype(f())>>(*this, std::forward<F>(f), priority);
 	}
 
 	template<typename F>
-	auto push(F&& f, int priority=0) -> TaskSharedPtr<decltype(f())>
+	auto push(F&& f, int priority=0) -> task_shared_ptr<decltype(f())>
 	{
 		auto task=create_task(std::forward<F>(f), priority);
 		assert(task);
-		push(std::dynamic_pointer_cast<TaskBase>(task));
+		push(std::dynamic_pointer_cast<base_task>(task));
 		return task;
 	}
 	template<typename F>
-	auto try_push(F&& f, int priority=0) -> std::pair<TaskSharedPtr<decltype(f())>, boost::queue_op_status> 
+	auto try_push(F&& f, int priority=0) -> std::pair<task_shared_ptr<decltype(f())>, boost::queue_op_status> 
 	{
 		auto task=create_task(std::forward<F>(f), priority);
 		assert(task);
-		boost::queue_op_status status=task_queue_.try_push(std::dynamic_pointer_cast<ITask>(task));
+		boost::queue_op_status status=task_queue_.try_push(std::dynamic_pointer_cast<i_task>(task));
 		if(status=boost::queue_op_status::success) adjust_threads();
 		return std::make_pair(task, status);
 	}
-	virtual void push(TaskPtr task) override
+	virtual void push(task_ptr task) override
 	{
 		bool pushed=false;
 		if(this_thread_)
-			pushed =dynamic_cast<WorkThread*>(this_thread_)->push(task);
+			pushed =dynamic_cast<work_thread*>(this_thread_)->push(task);
 		if(!pushed)
 		{
 			pushed=push_to_any_thread(task);
@@ -511,19 +469,19 @@ public:
 	}
 
 private:
-	class WorkThread : public WorkThreadBase
+	class work_thread : public base_work_thread
 	{
 	public:
-		WorkThread(TaskScheduler* scheduler)
+		work_thread(task_scheduler* scheduler)
 			: scheduler_(scheduler), stack_allocator_(scheduler->param().stack_param_),
 			task_queue_(scheduler->param().max_tasks_)
 		{
 			stealing();
-			thread_ = std::thread(&WorkThread::run, this);
+			thread_ = std::thread(&work_thread::run, this);
 		}
-		WorkThread(const WorkThread&) = delete;
-		WorkThread& operator=(const WorkThread&) = delete;
-		~WorkThread()
+		work_thread(const work_thread&) = delete;
+		work_thread& operator=(const work_thread&) = delete;
+		~work_thread()
 		{
 			if (thread_.joinable()) thread_.join();
 			release_stacks();
@@ -536,7 +494,7 @@ private:
 		void join() { thread_.join(); }
 		Queue& task_queue() { return task_queue_; }
 
-		bool push(TaskPtr task, bool force=false)
+		bool push(task_ptr task, bool force=false)
 		{
 			return task_queue_.try_push(task, force) == boost::queue_op_status::success;
 		}
@@ -550,7 +508,7 @@ private:
 			current_task_->suspend();
 			sleeping_tasks_.emplace(expiry_time, current_task_);
 		}
-		virtual void wakeup_task()
+		virtual void wakeup_task() override
 		{
 			for (auto it = sleeping_tasks_.begin(); it != sleeping_tasks_.end(); it++)
 			{
@@ -562,40 +520,40 @@ private:
 				}
 			}
 		}
-		virtual void wakeup_queue()
+		virtual void wakeup_queue() override
 		{
 			if (task_queue_.empty())
 			{
-				push(std::make_shared<Task<void>>(*scheduler_,
+				push(std::make_shared<task<void>>(*scheduler_,
 					[]() {}, 0));
 			}
 		}
 
-		virtual void* get_stack_allocator()
+		virtual void* get_stack_allocator() override
 		{
 			return &stack_allocator_;
 		}
 
 	private:
-		typedef std::list<TaskPtr> executing_list;
+		typedef std::list<task_ptr> executing_list;
 		Queue task_queue_;
-		std::multimap<boost::chrono::steady_clock::time_point, TaskBase*> sleeping_tasks_;
+		std::multimap<boost::chrono::steady_clock::time_point, base_task*> sleeping_tasks_;
 		std::atomic<bool> stoped_ { false };
-		TaskScheduler* scheduler_;
+		task_scheduler* scheduler_;
 		std::thread thread_;
 		StackAllocator stack_allocator_;
 		std::vector<stack_context> stacks_;
 
 		void run()
 		{
-			TaskScheduler::this_thread_ = this;
+			task_scheduler::this_thread_ = this;
 			ThreadEntry entry;
 			executing_list executing_tasks;
 			entry;
 			//printf("thread %d is created\n", std::this_thread::get_id());
 			while (1)
 			{
-				TaskPtr task;
+				task_ptr task;
 				boost::chrono::steady_clock::time_point suspend_time;
 				size_t actived_count = 0;
 				do
@@ -655,11 +613,11 @@ private:
 			}
 			stoped_ = true;
 			//printf("thread %d is stoped\n", std::this_thread::get_id());
-			TaskScheduler::this_thread_ = nullptr;
+			task_scheduler::this_thread_ = nullptr;
 			release_stacks();
 		}
 
-		bool pull(TaskPtr& task, bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
+		bool pull(task_ptr& task, bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
 		{
 			boost::queue_op_status st;
 			if(task_queue_.empty())
@@ -695,7 +653,7 @@ private:
 			size_t actived_count=0;
 			for(auto it=workers.begin(); it!=workers.end(); )
 			{
-				TaskBase* task=it->get();
+				base_task* task=it->get();
 				coroutine_context* coroutine= task->coroutine();
 				if (task->suspended())
 				{
@@ -782,17 +740,17 @@ private:
 		}
 	};
 
-	std::vector<std::unique_ptr<WorkThread>> threads_;
-	typedef std::vector<std::pair<WorkThread*, size_t>> snapshot_type;
+	std::vector<std::unique_ptr<work_thread>> threads_;
+	typedef std::vector<std::pair<work_thread*, size_t>> snapshot_type;
 	mutable boost::shared_mutex threads_mutex_;
 	Queue task_queue_;
-	TaskSchedulerParam param_;
+	task_scheduler_param param_;
 
 	size_t total_queue_size()
 	{
 		size_t count=task_queue_.size();
 		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
-		for(std::unique_ptr<WorkThread>& thread : threads_)
+		for(std::unique_ptr<work_thread>& thread : threads_)
 			count+=thread->queue_size();
 		return count;
 	}
@@ -818,7 +776,7 @@ private:
 
 	void add_thread()
 	{
-		std::unique_ptr<WorkThread> thread(new WorkThread(this));
+		std::unique_ptr<work_thread> thread(new work_thread(this));
 		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
 		threads_.push_back(std::move(thread));
 	}
@@ -828,7 +786,7 @@ private:
 		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
 		for(auto it=threads_.begin(); it!=threads_.end(); )
 		{
-			std::unique_ptr<WorkThread>& thread=*it;
+			std::unique_ptr<work_thread>& thread=*it;
 			if(thread->stoped())
 			{
 				if(thread->joinable()) thread->join();
@@ -849,12 +807,12 @@ private:
 	void shutdown_all_threads()
 	{
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
-		for (std::unique_ptr<WorkThread>& thread : threads_)
+		for (std::unique_ptr<work_thread>& thread : threads_)
 		{
 			if(!thread->stoped())
 			{
 				auto task = create_task([]() {
-					WorkThread* this_thread = static_cast<WorkThread*>(ITaskScheduler::this_thread());
+					work_thread* this_thread = static_cast<work_thread*>(i_task_scheduler::this_thread());
 					this_thread->task_queue().close();
 				});
 				thread->push(task, true);
@@ -867,7 +825,7 @@ private:
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		for(auto it=threads_.begin(); it!=threads_.end(); ++it)
 		{
-			std::unique_ptr<WorkThread>& thread=*it;
+			std::unique_ptr<work_thread>& thread=*it;
 			if(thread->joinable())
 			{
 				thread->join();
@@ -880,7 +838,7 @@ private:
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		for(auto it=threads_.begin(); it!=threads_.end(); it++)
 		{
-			const std::unique_ptr<WorkThread>& thread=*it;
+			const std::unique_ptr<work_thread>& thread=*it;
 			if(thread->thread_id()==thread_id)
 			{
 				return true;
@@ -889,11 +847,11 @@ private:
 		return false;
 	}
 
-	std::pair<WorkThread*, size_t> busiest() const
+	std::pair<work_thread*, size_t> busiest() const
 	{
-		WorkThread* p = nullptr;
+		work_thread* p = nullptr;
 		size_t n=0;
-		for (const std::unique_ptr<WorkThread>& thread : threads_)
+		for (const std::unique_ptr<work_thread>& thread : threads_)
 		{
 			size_t size = thread->queue_size();
 			if (size>0 && (n==0 || size > n) )
@@ -905,11 +863,11 @@ private:
 		return std::make_pair(p, n);
 	}
 
-	std::pair<WorkThread*, size_t> most_idle() const
+	std::pair<work_thread*, size_t> most_idle() const
 	{
-		WorkThread* p = nullptr;
+		work_thread* p = nullptr;
 		size_t n = 0;
-		for (const std::unique_ptr<WorkThread>& thread : threads_)
+		for (const std::unique_ptr<work_thread>& thread : threads_)
 		{
 			if (!thread->stoped())
 			{
@@ -924,13 +882,13 @@ private:
 		return std::make_pair(p, n);
 	}
 
-	bool push_to_any_thread(TaskPtr task)
+	bool push_to_any_thread(task_ptr task)
 	{
 		bool pushed = false;
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		if (!threads_.empty())
 		{
-			std::pair<WorkThread*, size_t> result = most_idle();
+			std::pair<work_thread*, size_t> result = most_idle();
 			if (result.first)
 			{
 				pushed = result.first->push(task);
@@ -939,16 +897,16 @@ private:
 		return pushed;
 	}
 
-	void stealing(WorkThread* current_thread)
+	void stealing(work_thread* current_thread)
 	{
 		size_t n = task_queue_.split(current_thread->task_queue());
 		if(n==0)
 		{
 			boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
-			std::pair<WorkThread*, size_t> result = busiest();
+			std::pair<work_thread*, size_t> result = busiest();
 			if(result.first!=nullptr)
 			{
-				WorkThread* thread = result.first;
+				work_thread* thread = result.first;
 				if (thread != current_thread)
 				{
 					n = thread->task_queue().split(current_thread->task_queue(), 1);
@@ -959,7 +917,7 @@ private:
 
 	void dispatch_all_tasks()
 	{
-		TaskPtr task;
+		task_ptr task;
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		if (threads_.empty()) return;
 		auto it = threads_.begin();
@@ -972,7 +930,7 @@ private:
 					break;
 			}
 
-			std::unique_ptr<WorkThread>& thread = *it;
+			std::unique_ptr<work_thread>& thread = *it;
 			if (!thread->stoped())
 			{
 				++actived;
@@ -996,36 +954,38 @@ private:
 		if(param_.stack_param_.capacity==0) 
 			param_.stack_param_.capacity=(uint32_t)stack_traits_type::default_size()*16;
 		param_.stack_param_.reservation=sizeof(detail::coroutine_context);
+		param_.stack_param_.reservation=
+			(param_.stack_param_.reservation-1+stack_align)/stack_align*stack_align;
 	}
 
 };
 
 template<typename Task, typename F1, typename... Other>
-inline auto pipeline(Task&& task, F1&& f1, Other&&... other) 
-	-> decltype(pipeline(task->then(std::forward<F1>(f1)), std::forward<Other>(other)...))
+inline auto pipeline(Task&& following, F1&& f1, Other&&... other) 
+	-> decltype(pipeline(following->then(std::forward<F1>(f1)), std::forward<Other>(other)...))
 {
-	return pipeline(task->then(std::forward<F1>(f1)), std::forward<Other>(other)...);
+	return pipeline(following->then(std::forward<F1>(f1)), std::forward<Other>(other)...);
 }
 
 template<typename Task, typename F1>
-inline TaskSharedPtr<typename std::result_of<F1(typename Task::result_type)>::type> pipeline(std::shared_ptr<Task>&& task, F1&& f1) 
+inline task_shared_ptr<typename std::result_of<F1(typename Task::result_type)>::type> pipeline(std::shared_ptr<Task>&& following, F1&& f1)
 {
-	return task->then(std::forward<F1>(f1));
+	return following->then(std::forward<F1>(f1));
 }
 
 }
 
-inline void TaskBase::resume()
+inline void base_task::resume()
 {
 	suspended_ = false;
-	if (thread_ && thread_!=detail::ITaskScheduler::this_thread()) thread_->wakeup_queue();
+	if (thread_ && thread_!=detail::i_task_scheduler::this_thread()) thread_->wakeup_queue();
 }
 
-inline void TaskBase::yield()
+inline void base_task::yield()
 {
 	if (coroutine_)
 	{
-		thread_ = detail::ITaskScheduler::this_thread();
+		thread_ = detail::i_task_scheduler::this_thread();
 		coroutine_->yield();
 		thread_=nullptr;
 	}
@@ -1033,41 +993,35 @@ inline void TaskBase::yield()
 }
 
 
-template<class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
-class PriorityTaskScheduler : public detail::TaskScheduler <detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry, StackAllocator>
+template<class ThreadEntry=empty_entry, class StackAllocator=fixedsize_stack>
+class priority_task_scheduler : public detail::task_scheduler <detail::sync_priority_queue<task_ptr, std::vector<task_ptr>, task_priority>, ThreadEntry, StackAllocator>
 {
-	typedef detail::TaskScheduler<detail::sync_priority_queue<TaskPtr, std::vector<TaskPtr>, TaskPriority>, ThreadEntry, StackAllocator> base_;
+	typedef detail::task_scheduler<detail::sync_priority_queue<task_ptr, std::vector<task_ptr>, task_priority>, ThreadEntry, StackAllocator> base_;
 public:
-	PriorityTaskScheduler() = default;
-	explicit PriorityTaskScheduler(const TaskSchedulerParam& param) : base_(param) { }
+	priority_task_scheduler() = default;
+	explicit priority_task_scheduler(const task_scheduler_param& param) : base_(param) { }
 };
 
-template<class ThreadEntry=EmptyEntry, class StackAllocator=fixedsize_stack>
-class TaskScheduler : public detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry, StackAllocator>
+template<class ThreadEntry=empty_entry, class StackAllocator=fixedsize_stack>
+class task_scheduler : public detail::task_scheduler<detail::sync_queue<task_ptr>, ThreadEntry, StackAllocator>
 {
-	typedef detail::TaskScheduler<detail::sync_queue<TaskPtr>, ThreadEntry, StackAllocator> base_;
+	typedef detail::task_scheduler<detail::sync_queue<task_ptr>, ThreadEntry, StackAllocator> base_;
 public:
-	TaskScheduler() = default;
-	explicit TaskScheduler(const TaskSchedulerParam& param) : base_(param) { }
-};
-
-struct io_result
-{
-	boost::system::error_code error;
-	std::size_t bytes_transferred { 0 };
+	task_scheduler() = default;
+	explicit task_scheduler(const task_scheduler_param& param) : base_(param) { }
 };
 
 namespace this_task
 {
-	inline TaskBase* self() { return detail::ITaskScheduler::this_task(); }
+	inline base_task* self() { return detail::i_task_scheduler::this_task(); }
 	inline void yield()
 	{
-		TaskBase* task = detail::ITaskScheduler::this_task();
+		base_task* task = detail::i_task_scheduler::this_task();
 		if (task) task->yield();
 	}
 	inline void sleep_for(const boost::chrono::steady_clock::duration& expiry_time)
 	{
-		detail::WorkThreadBase* thread = detail::ITaskScheduler::this_thread();
+		detail::base_work_thread* thread = detail::i_task_scheduler::this_thread();
 		if (thread)
 		{
 			thread->task_sleep_for(expiry_time);
@@ -1077,27 +1031,12 @@ namespace this_task
 
 	inline void sleep_until(const boost::chrono::steady_clock::time_point& expiry_time)
 	{
-		detail::WorkThreadBase* thread = detail::ITaskScheduler::this_thread();
+		detail::base_work_thread* thread = detail::i_task_scheduler::this_thread();
 		if (thread)
 		{
 			thread->task_sleep_until(expiry_time);
 			yield();
 		}
-	}
-
-	template<typename Function, typename... Args>
-	inline io_result await_io(Function&& fun, Args&&... args)
-	{
-		TaskBase* task=self();
-		io_result result;
-		fun(std::forward<Args>(args)..., [task, &result](const boost::system::error_code& error, std::size_t bytes_transferred ) mutable {
-			result.error=error;
-			result.bytes_transferred=bytes_transferred;
-			task->resume();
-		});
-		task->suspend();
-		yield();
-		return result;
 	}
 
 	void* stack_top();
@@ -1114,12 +1053,12 @@ namespace this_task
 }
 
 template<typename R, typename A>
-class FollowTask : public Task<R>
+class follow_task : public task<R>
 {
 public:
 	template<typename F>
-	FollowTask(std::shared_ptr<Task<A>>&& privous, F&& f)
-		: Task<R>(privous->schedule_, std::bind(&FollowTask::invoke_task, this), privous->priority()),
+	follow_task(std::shared_ptr<task<A>>&& privous, F&& f)
+		: task<R>(privous->schedule_, std::bind(&follow_task::invoke_task, this), privous->priority()),
 		fun_(std::forward<F>(f))
 	{
 		assert(privous);
@@ -1142,11 +1081,11 @@ private:
 };
 
 template<typename R> template<typename F>
-inline TaskSharedPtr<typename std::result_of<F(R)>::type> Task<R>::then(F&& f)
+inline task_shared_ptr<typename std::result_of<F(R)>::type> task<R>::then(F&& f)
 {
-	typedef FollowTask<typename std::result_of<F(R)>::type, R> result_task;
+	typedef follow_task<typename std::result_of<F(R)>::type, R> result_task;
 	auto task=std::make_shared<result_task>(this->shared_from_this(), std::forward<F>(f));
-	next_task_=std::dynamic_pointer_cast<TaskBase>(task);
+	next_task_=std::dynamic_pointer_cast<base_task>(task);
 	return task;
 }
 
@@ -1156,7 +1095,7 @@ inline auto pipeline(Scheduler& scheduler, F1&& f1, Other&&... other)
 {
 	auto first_task=scheduler.create_task(std::forward<F1>(f1));
 	auto last_task=detail::pipeline(std::forward<decltype(first_task)>(first_task), std::forward<Other>(other)...);
-	scheduler.push(std::dynamic_pointer_cast<TaskBase>(first_task));
+	scheduler.push(std::dynamic_pointer_cast<base_task>(first_task));
 	return last_task;
 }
 

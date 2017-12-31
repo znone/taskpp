@@ -350,35 +350,47 @@
 			UniqueIdentifier="{93995380-89BD-4b04-88EB-625FBE52EBFB}"
 			>
 			<File
-				RelativePath=".\include\task\blocking_queue.h"
+				RelativePath=".\include\taskpp\blocking_queue.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\condition_variable.h"
+				RelativePath=".\include\taskpp\call_in_new_stack.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\fixed_stack.h"
+				RelativePath=".\include\taskpp\condition_variable.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\mutex.h"
+				RelativePath=".\include\taskpp\event_loop.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\shared_stack.h"
+				RelativePath=".\include\taskpp\fixed_stack.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\inc\stack_top_posix.inc"
+				RelativePath=".\include\taskpp\mutex.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\task.h"
+				RelativePath=".\include\taskpp\shared_stack.h"
 				>
 			</File>
 			<File
-				RelativePath=".\include\task\task_stack.h"
+				RelativePath=".\include\taskpp\task.h"
+				>
+			</File>
+			<File
+				RelativePath=".\include\taskpp\detail\task_context.h"
+				>
+			</File>
+			<File
+				RelativePath=".\include\taskpp\detail\task_queue.h"
+				>
+			</File>
+			<File
+				RelativePath=".\include\taskpp\task_stack.h"
 				>
 			</File>
 		</Filter>

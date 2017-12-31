@@ -6,7 +6,7 @@
 #define noexcept throw()
 #endif //_MSC_VER
 
-namespace task
+namespace taskpp
 {
 namespace detail
 {

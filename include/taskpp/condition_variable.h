@@ -3,9 +3,9 @@
 
 #include <vector>
 #include <mutex>
-#include <task/mutex.h>
+#include <taskpp/mutex.h>
 
-namespace task
+namespace taskpp
 {
 
 class condition_variable
@@ -17,7 +17,7 @@ public:
 
 	void notify_one()
 	{
-		TaskBase* task = nullptr;
+		base_task* task = nullptr;
 		{
 			std::unique_lock<mutex> ilk(mtx_);
 			if (!waiters_.empty())
@@ -29,7 +29,7 @@ public:
 		if(task) task->resume();
 	}
 
-	void notify(TaskBase* task)
+	void notify(base_task* task)
 	{
 		bool erased = false;
 		{
@@ -49,12 +49,12 @@ public:
 
 	void notify_all()
 	{
-		std::vector<TaskBase*> temp;
+		std::vector<base_task*> temp;
 		{
 			std::unique_lock<mutex> ilk(mtx_);
 			temp.swap(waiters_);
 		}
-		for(TaskBase* task : temp)
+		for(base_task* task : temp)
 		{
 			task->resume();
 		}
@@ -62,7 +62,7 @@ public:
 
 	void wait(std::unique_lock<mutex>& lk)
 	{
-		TaskBase* task=this_task::self();
+		base_task* task=this_task::self();
 		if(task)
 		{
 			task->suspend();
@@ -88,7 +88,7 @@ public:
 
 	void wait_for(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::duration& expiry_time)
 	{
-		TaskBase* task=this_task::self();
+		base_task* task=this_task::self();
 		if(task)
 		{
 			task->suspend();
@@ -107,7 +107,7 @@ public:
 
 	void wait_until(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::time_point& expiry_time)
 	{
-		TaskBase* task=this_task::self();
+		base_task* task=this_task::self();
 		if(task)
 		{
 			task->suspend();
@@ -126,14 +126,14 @@ public:
 
 private:
 	mutex mtx_;
-	std::vector<TaskBase*> waiters_;
+	std::vector<base_task*> waiters_;
 
-	void add_task_to_waiter_list(TaskBase* task)
+	void add_task_to_waiter_list(base_task* task)
 	{
 		std::unique_lock<mutex> ilk(mtx_);
 		waiters_.push_back(task);
 	}
-	void erase_waiter(TaskBase* task)
+	void erase_waiter(base_task* task)
 	{
 		std::unique_lock<mutex> ilk(mtx_);
 		for(auto it=waiters_.begin(); it!=waiters_.end(); ++it)
@@ -147,7 +147,7 @@ private:
 	}
 	void cancel_timer()
 	{
-		detail::WorkThreadBase* thread = detail::ITaskScheduler::this_thread();
+		detail::base_work_thread* thread = detail::i_task_scheduler::this_thread();
 		if (thread)
 		{
 			thread->wakeup_task();

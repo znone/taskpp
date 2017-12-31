@@ -1,5 +1,5 @@
 
-namespace task
+namespace taskpp
 {
 
 namespace this_task 

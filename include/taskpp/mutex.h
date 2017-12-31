@@ -3,9 +3,9 @@
 
 #include <assert.h>
 #include <mutex>
-#include <task/task.h>
+#include <taskpp/task.h>
 
-namespace task
+namespace taskpp
 {
 
 template<typename Mutex>
@@ -46,7 +46,7 @@ public:
 	}
 
 private:
-	TaskBase* task_ { nullptr };
+	base_task* task_ { nullptr };
 	Mutex mutex_;
 };
 

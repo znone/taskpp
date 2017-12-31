@@ -2,15 +2,16 @@
 #include <fstream>
 #include <array>
 #include <iomanip>
-#include <task/task.h>
-#include <task/mutex.h>
-#include <task/condition_variable.h>
-#include <task/blocking_queue.h>
-#include <task/event_loop.h>
-#include <task/shared_stack.h>
+#include <taskpp/task.h>
+#include <taskpp/mutex.h>
+#include <taskpp/condition_variable.h>
+#include <taskpp/blocking_queue.h>
+#include <taskpp/event_loop.h>
+#include <taskpp/shared_stack.h>
+#include <taskpp/call_in_new_stack.h>
 
 using namespace std;
-using namespace task;
+using namespace taskpp;
 
 TestTask::TestTask()
 {
@@ -22,6 +23,7 @@ TestTask::TestTask()
 	TEST_ADD(TestTask::test_proirity)
 	TEST_ADD(TestTask::test_mutex)
 	TEST_ADD(TestTask::test_shared_stack)
+	TEST_ADD(TestTask::test_call_in_new_stack)
 	TEST_ADD(TestTask::test_condition_variable)
 	TEST_ADD(TestTask::test_blocking_message)
 	TEST_ADD(TestTask::test_cancel)
@@ -37,7 +39,7 @@ TestTask::TestTask()
 
 void TestTask::test_simple()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	int arg=0;
 	int result=scheduler.push([arg]() { 
 		return arg*arg; 
@@ -47,7 +49,7 @@ void TestTask::test_simple()
 
 void TestTask::test_chain()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	int v1=2, v2=3;
 	auto task1=scheduler.create_task([v1]() { 
 		return v1*v1;
@@ -61,7 +63,7 @@ void TestTask::test_chain()
 
 void TestTask::test_pipeline()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	int v1=2, v2=3;
 	int result=pipeline(scheduler, [v1]() { 
 		return v1*v1;
@@ -73,9 +75,9 @@ void TestTask::test_pipeline()
 
 void TestTask::test_sleep()
 {
-	TaskSchedulerParam config;
+	task_scheduler_param config;
 	config.max_threads_=1;
-	TaskScheduler<> scheduler(config);
+	task_scheduler<> scheduler(config);
 	scheduler.push([this]{
 		boost::chrono::steady_clock::time_point begin=boost::chrono::steady_clock::now();
 		boost::chrono::steady_clock::duration d=boost::chrono::seconds(1);
@@ -90,7 +92,7 @@ void TestTask::test_sleep()
 void TestTask::test_merge()
 {
 	vector<int> v {1, 9, 7, 3, 5, 8, 4, 6, 2, 10 };
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	scheduler.push([&]() mutable {
 		auto first=v.begin();
 		auto last=v.end();
@@ -112,17 +114,17 @@ void TestTask::test_merge()
 
 void TestTask::test_mutex()
 {
-	TaskSchedulerParam config;
+	task_scheduler_param config;
 	config.max_threads_=1;
-	TaskScheduler<> scheduler(config);
-	task::mutex m;
+	task_scheduler<> scheduler(config);
+	taskpp::mutex m;
 	string str;
 	scheduler.push([&m, &str] () mutable {
-		std::unique_lock<task::mutex> lk(m);
+		std::unique_lock<taskpp::mutex> lk(m);
 		str+="first task.";
 	});
 	scheduler.push([&m, &str] () mutable {
-		std::unique_lock<task::mutex> lk(m);
+		std::unique_lock<taskpp::mutex> lk(m);
 		str+="second task.";
 	});
 	scheduler.join_all();
@@ -131,14 +133,14 @@ void TestTask::test_mutex()
 
 void TestTask::test_condition_variable()
 {
-	TaskSchedulerParam config;
+	task_scheduler_param config;
 	config.max_threads_=1;
-	TaskScheduler<> scheduler(config);
-	task::mutex m;
-	task::condition_variable cv;
+	task_scheduler<> scheduler(config);
+	taskpp::mutex m;
+	taskpp::condition_variable cv;
 	string str;
 	scheduler.push([&m, &cv, &str] () mutable {
-		std::unique_lock<task::mutex> lk(m);
+		std::unique_lock<taskpp::mutex> lk(m);
 		cv.wait(lk, [&str]() { return !str.empty(); } );
 		str+="second task.";
 	});
@@ -154,7 +156,7 @@ void TestTask::test_condition_variable()
 
 void TestTask::test_blocking_message()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	blocking_message<std::string> message;
 	std::string send_msg("message.");
 	std::string recv_msg;
@@ -177,9 +179,9 @@ void TestTask::test_blocking_message()
 
 void TestTask::test_proirity()
 {
-	TaskSchedulerParam config;
+	task_scheduler_param config;
 	config.max_threads_=1;
-	PriorityTaskScheduler<> scheduler(config);
+	priority_task_scheduler<> scheduler(config);
 
 	std::mutex m;
 	std::condition_variable cv;
@@ -212,7 +214,7 @@ void TestTask::test_proirity()
 
 void TestTask::test_cancel()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	std::mutex m;
 	std::condition_variable cv;
 	int a=0;
@@ -234,7 +236,7 @@ void TestTask::test_cancel()
 	{
 		task->result();
 	}
-	catch (task::task_canceled&)
+	catch (taskpp::task_canceled&)
 	{
 		puts("task is canceled.\n");	
 	}
@@ -243,7 +245,7 @@ void TestTask::test_cancel()
 
 void TestTask::test_create()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	const uint64_t n = 1000000;
 	atomic<size_t> c(0);
 	chrono::high_resolution_clock::time_point begin=chrono::high_resolution_clock::now();
@@ -261,7 +263,7 @@ void TestTask::test_create()
 
 void TestTask::test_yield()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	const uint64_t n = 1000;
 	const uint64_t m =100000;
 	atomic<int64_t> c(0), t(0);
@@ -287,7 +289,7 @@ void TestTask::test_yield()
 
 void TestTask::test_timer()
 {
-	TaskScheduler<> scheduler;
+	task_scheduler<> scheduler;
 	size_t count=5;
 	scheduler.push([&count]() {
 		event_loop loop;
@@ -328,11 +330,11 @@ static int recfun(int n)
 
 void TestTask::test_shared_stack()
 {
-	TaskSchedulerParam param;
+	task_scheduler_param param;
 	param.stack_param_.init_size=4*1024;
 	param.stack_param_.capacity=1024*1024;
 
-	TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
+	task_scheduler<empty_entry, shared_stack> scheduler(param);
 	atomic<int> n(10);
 	scheduler.push([&n]() {
 		print_stack_info();
@@ -346,12 +348,12 @@ void TestTask::test_shared_stack()
 void TestTask::test_concurrency()
 {
 	const size_t n = 1000000;
-	TaskSchedulerParam param;
+	task_scheduler_param param;
 	param.max_tasks_=n;
 	param.stack_param_.init_size=1024;
 	param.stack_param_.capacity=1024*1024;
 
-	TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
+	task_scheduler<empty_entry, shared_stack> scheduler(param);
 	atomic<size_t> counter(0);
 	atomic<size_t> total_tasks(0), total_stacks(0);
 	atomic<bool> stoped(false);
@@ -384,6 +386,31 @@ void TestTask::test_concurrency()
 	scheduler.join_all();
 	stoped=true;
 	watch.join();
+}
+
+void TestTask::test_call_in_new_stack()
+{
+	task_scheduler<> scheduler;
+	string s="a";
+
+	auto fun= [](const string& s) {
+		char c=s.back()+1;
+		string s1=s+c;
+		this_task::yield();
+		s1+=c+1;
+		return s1;
+	};
+	//call in thread
+	string result1=call_in_new_stack(32*1024, fun, s);
+
+	string result2=scheduler.push([fun, s](){ 
+		char c=s.back()+1;
+		string s1=s+c;
+		//call in task
+		return call_in_new_stack(32*1024, fun, s1);
+	})->result();
+	TEST_ASSERT_EQUALS("abc", result1);
+	TEST_ASSERT_EQUALS("abcd", result2);
 }
 
 

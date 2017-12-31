@@ -1,30 +1,29 @@
-# TASK
+# taskpp
 这只是个玩具！
-这是一个用 C++11 写的线程池，主要特点有：
+这是一个用 C++11 写的线程池，依赖boost.context。主要特点有：
 1. 任务可以让路、挂起和睡眠；
 2. 任务之间可以同步，有互斥和条件变量；
 3. 可以使用任务链。
+4. 线程池内的线程间会偷取任务。
 
 ### 使用方式
 
-本项目仅由头文件组成，不需要编译。使用时需要依赖boost。
-
 ```C++
-#include <task/task.h>
-using namespace task;
+#include <taskpp/task.h>
+using namespace taskpp;
 ```
 
-#### TaskScheduler
+#### task_scheduler
 
 模板类TaskScheduler提供任务调度服务，通过它创建的任务指针操纵任务。
 
 - create_task(fun)	由一个函数创建一个任务，但不放入队列运行。
-- push(fun)		把一个函数做为任务放入TaskScheduler，任务将立即排队运行。
-- push(task)		把一个任务排队运行，该任务应该是由该TaskScheduler对象创建的。
+- push(fun)		把一个函数做为任务放入task_scheduler，任务将立即排队运行。
+- push(task)		把一个任务排队运行，该任务应该是由该task_scheduler对象创建的。
 - join_all()		等待所有任务运行完毕。
 
 ```C++
-TaskScheduler<> scheduler;
+task_scheduler<> scheduler;
 scheduler.push([]() { 
 	printf("Hello World!\n");
 });
@@ -32,12 +31,12 @@ scheduler.join_all();
 
 ```
 
-#### Task
+#### task
 
-任务由模板类Task<R>实现，模板参数R是任务的返回类型。实际使用的是它的智能指针：
+任务由模板类task<R>实现，模板参数R是任务的返回类型。实际使用的是它的智能指针：
 ```C++
 template<typename R>
-using TaskSharedPtr=std::shared_ptr<Task<R>>;
+using task_shared_ptr=std::shared_ptr<task<R>>;
 ```
 
 - cancel()		撤销一个任务。
@@ -58,8 +57,8 @@ using TaskSharedPtr=std::shared_ptr<Task<R>>;
 
 这里提供的互斥和信号量用于任务间的同步。互斥和信号量的用法与标准库类似，但是这里的信号量只能在任务内等待。
 ```C++
-task::mutex m;
-std::unique_lock<task::mutex> lk(m);
+taskpp::mutex m;
+std::unique_lock<taskpp::mutex> lk(m);
 ```
 
 #### 在任务间传递消息
@@ -67,8 +66,8 @@ std::unique_lock<task::mutex> lk(m);
 模板类blocking_message可以用来在任务之间传递消息。发送消息的任务会阻塞，直到有任务接收消息为止。
 
 ```C++
-task::TaskScheduler<> scheduler;
-task::blocking_message<std::string> message;
+taskpp::task_scheduler<> scheduler;
+taskpp::blocking_message<std::string> message;
 // send message
 scheduler.push([&message]() mutable {
 	message<<std::string("Hello");
@@ -86,7 +85,7 @@ scheduler.join_all();
 任务链能保证任务之前的执行顺序。
 
 ```C++
-task::TaskScheduler<> scheduler;
+taskpp::task_scheduler<> scheduler;
 int v1=2, v2=3;
 auto task1=scheduler.create_task([v1]() { 
 	return v1*v1;
@@ -105,7 +104,7 @@ scheduler.push(task1);
 可以在比较复杂的任务内使用事件循环。当没有事件时，事件循环会主动让路。当有新事件时，任务会被唤醒。
 可以在任务外向事件循环投送函数。
 
-类task::event_loop用于创建事件循环。
+类taskpp::event_loop用于创建事件循环。
 
 - post(handler)		请求事件循环执行一个函数
 - stop()				停止事件循环
@@ -135,11 +134,11 @@ scheduler.push(task1);
 任务需要足够多的堆栈才能正常运行，但大多空闲的时候需要的堆栈比忙碌的时候少很多。可以利用这个特性在同一个线程运行的任务间共享运行的堆栈空间，以节省内存提供更大的并发能力。当任务让路时，把堆栈数据从运行堆栈中复制出来，把运行堆栈让给其他任务使用。当任务恢复运行时，再把堆栈数据复制回去。
 
 ```C++
-TaskSchedulerParam param;
+task_scheduler_param param;
 param.stack_param_.init_size=4*1024;	//初始的保存堆栈数据的区域大小
 param.stack_param_.capacity=1024*1024;	//实际运行的的堆栈大小
 
-TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
+task_scheduler<empty_entry, shared_stack> scheduler(param);
 ```
 
 如果其它线程或任务会访问任务堆栈上的数据，则不能使用共享堆栈。
@@ -147,6 +146,24 @@ TaskScheduler<EmptyEntry, shared_stack> scheduler(param);
 3. 不使用任务堆栈 empty_stack
 
 这种情况下任务直接在线程上运行，任务间切换、定时器和同步等功能也不能使用。
+
+4. 在新的堆栈上调用函数
+
+当调用递归函数时，有时会遇到堆栈不够的情况。这时可以开辟一个新堆栈，在这个堆栈上调用函数，等函数返回后再回到原来的堆栈上。
+
+```C++
+call_in_new_stack(stack, stack_size, fun, args...);
+call_in_new_stack(stack_size, fun, args...);
+
+```
+例如：
+
+```C++
+call_in_new_stack(32*1024, &printf, "Hello world!");
+```
+第一个参数是新堆栈的大小，第二个参数是要调用的函数地址，其余参数是传递给函数的参数。
+
+警告：在共享堆栈的任务中使用 call_in_new_stack 时，传递给 call_in_new_stack 调用的函数不能切换到线程，否则程序会因堆栈混乱而崩溃。
 
 ### 性能
 

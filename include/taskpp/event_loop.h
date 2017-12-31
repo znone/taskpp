@@ -4,11 +4,11 @@
 #include <functional>
 #include <atomic>
 #include <queue>
-#include <task/mutex.h>
-#include <task/condition_variable.h>
+#include <taskpp/mutex.h>
+#include <taskpp/condition_variable.h>
 #include <boost/thread/shared_mutex.hpp>
 
-namespace task
+namespace taskpp
 {
 
 class event_loop
@@ -23,7 +23,7 @@ public:
 	void post(Handler&& handler)
 	{
 		{
-			std::unique_lock<task::mutex> lk(events_mutex_);
+			std::unique_lock<taskpp::mutex> lk(events_mutex_);
 			events_.push(handler);
 		}
 		events_cv_.notify_one();
@@ -41,7 +41,7 @@ public:
 	template<typename Handler>
 	int set_timer(const boost::chrono::steady_clock::time_point& expire_time, Handler&& handler)
 	{
-		std::unique_lock<task::mutex> lk(timers_mutex_);
+		std::unique_lock<taskpp::mutex> lk(timers_mutex_);
 		++next_timer_id_;
 		timer_item item { next_timer_id_, boost::chrono::seconds(0), handler };
 		timers_.emplace(expire_time,  std::move(item));
@@ -52,7 +52,7 @@ public:
 	template<typename Handler>
 	int set_timer(const boost::chrono::steady_clock::duration& expire_time, bool periodic, Handler&& handler)
 	{
-		std::unique_lock<task::mutex> lk(timers_mutex_);
+		std::unique_lock<taskpp::mutex> lk(timers_mutex_);
 		++next_timer_id_;
 		auto interval=periodic ? expire_time : boost::chrono::steady_clock::duration::zero();
 		timers_.emplace(boost::chrono::steady_clock::now()+expire_time, 
@@ -63,7 +63,7 @@ public:
 
 	bool cancel_timer(int timer_id)
 	{
-		std::unique_lock<task::mutex> lk(timers_mutex_);
+		std::unique_lock<mutex> lk(timers_mutex_);
 		auto it=timers_.begin();
 		while(it!=timers_.end())
 		{
@@ -83,14 +83,14 @@ public:
 
 	void cancel_all_timer()
 	{
-		std::unique_lock<task::mutex> lk(timers_mutex_);
+		std::unique_lock<mutex> lk(timers_mutex_);
 		timers_.clear();
 		timer_changed_ = true;
 	}
 
 	bool reset_timer(int timer_id, const boost::chrono::steady_clock::time_point& expire_time)
 	{
-		std::unique_lock<task::mutex> lk(timers_mutex_);
+		std::unique_lock<mutex> lk(timers_mutex_);
 		auto it = timers_.begin();
 		while (it != timers_.end())
 		{
@@ -116,10 +116,10 @@ public:
 
 private:
 	std::atomic<bool> stoped_;
-	mutable task::mutex events_mutex_;
-	task::condition_variable events_cv_;
+	mutable mutex events_mutex_;
+	condition_variable events_cv_;
 	std::queue<event_type> events_;
-	task::mutex timers_mutex_;
+	mutex timers_mutex_;
 	bool timer_changed_;
 	
 	int next_timer_id_;
@@ -133,7 +133,7 @@ private:
 
 	bool pop_event(event_type& handler)
 	{
-		std::unique_lock<task::mutex> lk(events_mutex_);
+		std::unique_lock<mutex> lk(events_mutex_);
 		if(!events_.empty())
 		{
 			handler=events_.front();
@@ -148,12 +148,12 @@ private:
 
 	void wait_for_timers(const boost::chrono::steady_clock::time_point& expired_time)
 	{
-		std::unique_lock<task::mutex> lk(events_mutex_);
+		std::unique_lock<mutex> lk(events_mutex_);
 		events_cv_.wait_until(lk, expired_time);
 	}
 	void wait_for_events()
 	{
-		std::unique_lock<task::mutex> lk(events_mutex_);
+		std::unique_lock<mutex> lk(events_mutex_);
 		events_cv_.wait(lk, [this]() {
 			return !events_.empty();
 		});
@@ -161,12 +161,12 @@ private:
 
 	bool timer_changed() const
 	{
-		std::unique_lock<task::mutex> lk(events_mutex_);
+		std::unique_lock<mutex> lk(events_mutex_);
 		return timer_changed_;
 	}
 	void timer_changed(bool v)
 	{
-		std::unique_lock<task::mutex> lk(events_mutex_);
+		std::unique_lock<mutex> lk(events_mutex_);
 		timer_changed_=v;
 	}
 };
@@ -200,7 +200,7 @@ inline void event_loop::run()
 inline bool event_loop::arrival_timers(boost::chrono::steady_clock::time_point& next_expired_time)
 {
 	auto now=boost::chrono::steady_clock::now();
-	std::unique_lock<task::mutex> lk(timers_mutex_);
+	std::unique_lock<mutex> lk(timers_mutex_);
 	auto it=timers_.begin();
 	while(it!=timers_.end())
 	{

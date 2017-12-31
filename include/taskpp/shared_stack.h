@@ -1,9 +1,9 @@
 #ifndef _TASK_SHARED_STACK_H_
 #define _TASK_SHARED_STACK_H_
 
-#include "task_stack.h"
+#include <taskpp/task_stack.h>
 
-namespace task
+namespace taskpp
 {
 
 class shared_stack
@@ -66,7 +66,7 @@ public:
 		{
 			stack_context new_sctx;
 			size_t new_size=(count-1+param_.init_size)/param_.init_size*param_.init_size;
-			create_private_stack(new_sctx, new_size);
+			create_private_stack(new_sctx, (uint32_t)new_size);
 			if( !ptrequal(ptradd(priv_sctx->sctx_.sp, sizeof(private_stack_context)), sctx.task_data))
 				free_private_stack(priv_sctx->sctx_);
 			priv_sctx->sctx_=new_sctx;

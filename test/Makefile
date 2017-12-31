@@ -7,9 +7,9 @@ LDFLAGS= -L/usr/lib -L/usr/local/lib -lpthread -lcpptest -lboost_context -lboost
 
 all : $(TARGET)
 
-test.o : test.cpp test.h ../include/task/task.h
+test.o : test.cpp test.h ../include/taskpp/task.h ../include/taskpp/shared_stack.h ../include/taskpp/call_in_new_stack.h
 	$(CC) -c $(CFLAGS) $(CXXFLAGS) -o $@ $< 
-	
+
 $(TARGET) : $(OBJ)
 	libtool --tag=CXX --mode=link $(CC) $(LDFLAGS) -o $@ $^
 

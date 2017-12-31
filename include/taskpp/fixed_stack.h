@@ -1,9 +1,9 @@
 #ifndef _TASK_FIXED_STACK_H_
 #define _TASK_FIXED_STACK_H_
 
-#include "task_stack.h"
+#include <taskpp/task_stack.h>
 
-namespace task
+namespace taskpp
 {
 
 class fixedsize_stack : public boost::context::fixedsize_stack
@@ -18,7 +18,7 @@ public:
 
 	static uint32_t default_size() 
 	{
-		return traits_type::default_size();
+		return (uint32_t)traits_type::default_size();
 	}
 
 	stack_context allocate()

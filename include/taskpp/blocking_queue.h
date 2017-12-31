@@ -2,11 +2,11 @@
 #define TASK_BLOCKING_QUEUE_H_
 
 #include <deque>
-#include "mutex.h"
-#include "condition_variable.h"
+#include <taskpp/mutex.h>
+#include <taskpp/condition_variable.h>
 #include <boost/thread/concurrent_queues/queue_op_status.hpp>
 
-namespace task
+namespace taskpp
 {
 
 template<typename T>
@@ -25,7 +25,7 @@ public:
 	void push(const value_type& v)
 	{
 		std::unique_lock<mutex> lk(mtx_);
-		TaskBase* task=this_task::self();
+		base_task* task=this_task::self();
 		//only enable one sender
 		while(sender_!=nullptr && sender_!=task)
 		{
@@ -46,7 +46,7 @@ public:
 		catch (boost::sync_queue_is_closed&)
 		{
 			sender_=nullptr;
-			for(TaskBase* task : pending_sender)
+			for(base_task* task : pending_sender)
 				task->resume();
 			pending_sender.clear();
 			throw;
@@ -56,7 +56,7 @@ public:
 		//wakeup a pending sender
 		if(closed_)
 		{
-			for(TaskBase* task : pending_sender)
+			for(base_task* task : pending_sender)
 				task->resume();
 			pending_sender.clear();
 		}
@@ -99,8 +99,8 @@ private:
 	bool closed_;
 	size_t waiting_empty_;
 	size_t waiting_full_;
-	TaskBase* sender_;
-	std::deque<TaskBase*> pending_sender;
+	base_task* sender_;
+	std::deque<base_task*> pending_sender;
 
 	bool full() const { return data_!=nullptr; }
 	inline bool notify_not_empty_if_needed(std::unique_lock<mutex>& lk)
