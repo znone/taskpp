@@ -1,5 +1,5 @@
-#ifndef _TASK_DETAIL_QUEUE_H_
-#define _TASK_DETAIL_QUEUE_H_
+#ifndef _TASKPP_DETAIL_QUEUE_H_
+#define _TASKPP_DETAIL_QUEUE_H_
 
 #include <boost/thread/concurrent_queues/sync_priority_queue.hpp>
 #include <boost/thread/concurrent_queues/sync_queue.hpp>
@@ -159,4 +159,4 @@ private:
 
 }
 
-#endif //_TASK_QUEUE_H_
+#endif //_TASKPP_DETAIL_QUEUE_H_

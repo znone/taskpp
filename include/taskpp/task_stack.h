@@ -1,5 +1,5 @@
-#ifndef _TASK_STACK_H_
-#define _TASK_STACK_H_
+#ifndef _TASKPP_TASK_STACK_H_
+#define _TASKPP_TASK_STACK_H_
 
 #include <boost/context/fixedsize_stack.hpp>
 
@@ -77,4 +77,4 @@ public:
 
 }
 
-#endif //_TASK_STACK_H_
+#endif //_TASKPP_TASK_STACK_H_

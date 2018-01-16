@@ -1,5 +1,5 @@
-#ifndef _TASK_MUTEX_H_
-#define _TASK_MUTEX_H_
+#ifndef _TASKPP_MUTEX_H_
+#define _TASKPP_MUTEX_H_
 
 #include <assert.h>
 #include <mutex>
@@ -97,4 +97,4 @@ typedef basic_shared_mutex<std::mutex> shared_mutex;
 
 }
 
-#endif //_TASK_MUTEX_H_
+#endif //_TASKPP_MUTEX_H_

@@ -1,5 +1,5 @@
-#ifndef _TASK_FIXED_STACK_H_
-#define _TASK_FIXED_STACK_H_
+#ifndef _TASKPP_FIXED_STACK_H_
+#define _TASKPP_FIXED_STACK_H_
 
 #include <taskpp/task_stack.h>
 
@@ -45,4 +45,4 @@ private:
 
 }
 
-#endif //_TASK_FIXED_STACK_H_
+#endif //_TASKPP_FIXED_STACK_H_

@@ -350,6 +350,14 @@
 			UniqueIdentifier="{93995380-89BD-4b04-88EB-625FBE52EBFB}"
 			>
 			<File
+				RelativePath=".\include\taskpp\detail\asio.h"
+				>
+			</File>
+			<File
+				RelativePath=".\include\taskpp\asio.h"
+				>
+			</File>
+			<File
 				RelativePath=".\include\taskpp\blocking_queue.h"
 				>
 			</File>
@@ -383,6 +391,10 @@
 			</File>
 			<File
 				RelativePath=".\include\taskpp\detail\task_context.h"
+				>
+			</File>
+			<File
+				RelativePath=".\include\taskpp\detail\task_coroutine.h"
 				>
 			</File>
 			<File

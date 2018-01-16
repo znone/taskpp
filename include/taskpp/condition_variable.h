@@ -1,5 +1,5 @@
-#ifndef _TASK_CONDITION_VARIABLE_H_
-#define _TASK_CONDITION_VARIABLE_H_
+#ifndef _TASKPP_CONDITION_VARIABLE_H_
+#define _TASKPP_CONDITION_VARIABLE_H_
 
 #include <vector>
 #include <mutex>
@@ -147,7 +147,7 @@ private:
 	}
 	void cancel_timer()
 	{
-		detail::base_work_thread* thread = detail::i_task_scheduler::this_thread();
+		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
 		if (thread)
 		{
 			thread->wakeup_task();
@@ -157,4 +157,4 @@ private:
 
 }
 
-#endif //_TASK_CONDITION_VARIABLE_H_
+#endif //_TASKPP_CONDITION_VARIABLE_H_

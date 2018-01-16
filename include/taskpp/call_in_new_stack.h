@@ -1,5 +1,5 @@
-#ifndef _TASK_CALL_IN_NEW_STACK_H_
-#define _TASK_CALL_IN_NEW_STACK_H_
+#ifndef _TASKPP_CALL_IN_NEW_STACK_H_
+#define _TASKPP_CALL_IN_NEW_STACK_H_
 
 #include <type_traits>
 #include <exception>
@@ -141,4 +141,4 @@ inline auto call_in_new_stack(size_t stack_size, F&& fun, Args&&... args)
 
 }
 
-#endif //_TASK_CALL_IN_NEW_STACK_H_
+#endif //_TASKPP_CALL_IN_NEW_STACK_H_

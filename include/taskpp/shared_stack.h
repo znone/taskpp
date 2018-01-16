@@ -1,5 +1,5 @@
-#ifndef _TASK_SHARED_STACK_H_
-#define _TASK_SHARED_STACK_H_
+#ifndef _TASKPP_SHARED_STACK_H_
+#define _TASKPP_SHARED_STACK_H_
 
 #include <taskpp/task_stack.h>
 
@@ -126,4 +126,4 @@ private:
 
 }
 
-#endif //_TASK_SHARED_STACK_H_
+#endif //_TASKPP_SHARED_STACK_H_

@@ -1,5 +1,5 @@
-#ifndef _TASK_EVENT_LOOP_H_
-#define _TASK_EVENT_LOOP_H_
+#ifndef _TASKPP_EVENT_LOOP_H_
+#define _TASKPP_EVENT_LOOP_H_
 
 #include <functional>
 #include <atomic>
@@ -15,9 +15,13 @@ class event_loop
 {
 	typedef std::function<void()> event_type;
 public:
-	event_loop() : stoped_(false), next_timer_id_(0) { }
+	event_loop() : stoped_(true), next_timer_id_(0) { }
 	event_loop(const event_loop&) = delete;
 	event_loop& operator=(const event_loop&) = delete;
+	~event_loop()
+	{
+		stop();
+	}
 
 	template<typename Handler>
 	void post(Handler&& handler)
@@ -31,9 +35,17 @@ public:
 
 	void stop()
 	{
-		post([this]() {
-			stoped_=true;
-		});
+		std::unique_lock<mutex> lk(events_mutex_);
+		if (!stoped_)
+		{
+			stoped_ = true;
+			events_cv_.notify_all();
+		}
+	}
+	bool stoped() const 
+	{ 
+		std::unique_lock<mutex> lk(events_mutex_);
+		return stoped_;
 	}
 
 	void run();
@@ -115,7 +127,7 @@ public:
 	}
 
 private:
-	std::atomic<bool> stoped_;
+	bool stoped_;
 	mutable mutex events_mutex_;
 	condition_variable events_cv_;
 	std::queue<event_type> events_;
@@ -173,8 +185,11 @@ private:
 
 inline void event_loop::run()
 {
-	stoped_=false;
-	while(1)
+	{
+		std::unique_lock<mutex> lk(events_mutex_);
+		stoped_ = false;
+	}
+	while(!stoped_)
 	{
 		event_type handler;
 		boost::chrono::steady_clock::time_point next_expired_time;
@@ -225,4 +240,4 @@ inline bool event_loop::arrival_timers(boost::chrono::steady_clock::time_point& 
 
 }
 
-#endif //_TASK_EVENT_LOOP_H_
+#endif //_TASKPP_EVENT_LOOP_H_

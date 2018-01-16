@@ -255,7 +255,7 @@ void TestTask::test_create()
 		this_thread::sleep_for(chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
-	chrono::high_resolution_clock::duration lost = end - begin;
+	auto lost = chrono::duration_cast<chrono::nanoseconds>(end - begin);
 	TEST_ASSERT_EQUALS_OBJ(n, c);
 	cout << "running " << n << " tasks cost time:" << lost.count() << "ns.";
 	cout << " each task cost time: " << lost.count()/n << "ns." << endl;
@@ -281,7 +281,7 @@ void TestTask::test_yield()
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	scheduler.join_all();
 	chrono::high_resolution_clock::time_point end = chrono::high_resolution_clock::now();
-	chrono::high_resolution_clock::duration lost = end - begin;
+	auto lost = chrono::duration_cast<chrono::nanoseconds>(end - begin);
 	TEST_ASSERT_EQUALS_OBJ(n*m, c);
 	cout << "switch " << n << " tasks " << m << " times cost time:" << lost.count() << "ns.";
 	cout << " each switch cost time: " << lost.count()/(n*m) << "ns." << endl;
