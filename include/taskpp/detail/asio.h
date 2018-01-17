@@ -140,7 +140,6 @@ public:
 		if(this->task_queue_.try_push(task, force) == boost::queue_op_status::success)
 		{
 			this->service_.post([this]() {
-				schedule_tasks();
 			});
 			return true;
 		}
@@ -151,17 +150,48 @@ public:
 	{
 		typename base::markup_thread markup(this);
 		ThreadEntry entry;
+		boost::system::error_code ec;
 		entry;
-		schedule_tasks();
-		this->service_.run();
+		while(1)
+		{
+			task_ptr task;
+			size_t actived_count = 0;
+			boost::chrono::steady_clock::time_point suspend_time;
+			do
+			{
+				suspend_time = this->wakeup_tasks();
+				actived_count = this->resume_workers(executing_tasks_);
+				if (this->task_queue_.empty())
+					this->stealing();
+			} while (actived_count > 0 && this->task_queue_.empty());
+			//pickup task and don't blocking
+			while(this->pull(task, false, suspend_time) && task)
+			{
+				this->start_task(executing_tasks_, task);
+				task.reset();
+			}
+			if(this->task_queue_.closed())
+				break;
+			//run asio's handlers
+			while(this->service_.poll(ec));
+			//waiting for timer
+			if(actived_count==0 && suspend_time>boost::chrono::steady_clock::now())
+			{
+				wait_for_schedule(suspend_time);
+				this->service_.run_one(ec);
+			}
+		}
 		//waiting for all tasks is stoped.
 		while (!executing_tasks_.empty())
 		{
 			boost::chrono::steady_clock::time_point suspend_time = this->wakeup_tasks();
 			size_t actived_count= this->resume_workers(executing_tasks_);
+			while(this->service_.poll(ec));
 			if(suspend_time>boost::chrono::steady_clock::now())
+			{
 				wait_for_schedule(suspend_time);
-			this->service_.run_one();
+				this->service_.run_one();
+			}
 		}
 		this->stoped_ = true;
 		this->release_stacks();
@@ -191,32 +221,10 @@ private:
 	typename base::executing_list executing_tasks_;
 	boost::asio::basic_waitable_timer<boost::chrono::steady_clock> timer_;
 
-	void schedule_tasks()
-	{
-		task_ptr task;
-		boost::chrono::steady_clock::time_point suspend_time;
-		size_t actived_count = 0;
-		do
-		{
-			suspend_time = this->wakeup_tasks();
-			actived_count = this->resume_workers(executing_tasks_);
-			if (this->task_queue_.empty())
-				this->stealing();
-		} while (actived_count > 0 && this->task_queue_.empty());
-		while(this->pull(task, false, suspend_time) && task)
-		{
-			this->start_task(executing_tasks_, task);
-			task.reset();
-		}
-		if(suspend_time>boost::chrono::steady_clock::now())
-			wait_for_schedule(suspend_time);
-	}
-
 	void wait_for_schedule(const boost::chrono::steady_clock::time_point& next_time)
 	{
 		timer_.expires_at(next_time);
 		timer_.async_wait([this](const boost::system::error_code& ec) {
-			if(!ec) schedule_tasks();
 		});
 	}
 };

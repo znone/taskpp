@@ -1,7 +1,7 @@
 TARGET=echo_server echo_client
 CC=g++
 OBJ=echo_client.o echo_server.o
-CFLAGS=-g -DNDEBUG -O3 -I/usr/include -I/usr/local/include 
+CFLAGS=-g -DNDEBUG -O3 -D_GNU_SOURCE -I/usr/include -I/usr/local/include 
 CXXFLAGS=-I../include -std=c++11
 LDFLAGS= -L/usr/lib -L/usr/local/lib -lpthread -lboost_thread -lboost_context -lboost_chrono -lboost_system
 

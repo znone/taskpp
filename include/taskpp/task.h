@@ -116,13 +116,13 @@ struct task_priority
 struct task_scheduler_param
 {
 	size_t max_threads_;
-	size_t max_tasks_;
+	size_t max_tasks_ { 1024 } ;
 	stack_param stack_param_;
-	uint32_t alarm_remaining_; //If the stack remaining space is less than this value, alarm
-	bool enable_stealing_;
+	uint32_t alarm_remaining_ { 128 }; //If the stack remaining space is less than this value, alarm
+	bool enable_stealing_ { true } ;
+	bool set_thread_affinity_ { false };
 
 	task_scheduler_param()
-		: max_tasks_(1024), alarm_remaining_(128), enable_stealing_(true)
 	{
 		max_threads_ = std::thread::hardware_concurrency() * 2;
 	}
@@ -414,6 +414,21 @@ public:
 		return &stack_allocator_;
 	}
 
+#ifdef _WIN32
+	inline void set_thread_affinity(intptr_t processor)
+	{
+		SetThreadAffinityMask(thread_.native_handle(), 1<<processor);
+	}
+#else
+	inline void set_thread_affinity(intptr_t processor)
+	{
+		cpu_set_t cs;
+		CPU_ZERO(&cs);
+		CPU_SET(processor, &cs);
+		pthread_setaffinity_np(thread_.native_handle(), sizeof(cpu_set_t), &cs);
+	}
+#endif
+
 protected:
 	typedef std::list<task_ptr> executing_list;
 	Queue task_queue_;
@@ -639,6 +654,7 @@ protected:
 		}
 		return next_time;
 	}
+
 };
 
 template<class Queue, class ThreadEntry=empty_entry, class StackAllocator=fixedsize_stack,
@@ -779,6 +795,8 @@ private:
 		thread->init();
 		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
 		threads_.push_back(std::move(thread));
+		if(param_.set_thread_affinity_)
+			threads_.back()->set_thread_affinity((threads_.size()-1)%std::thread::hardware_concurrency());
 	}
 
 	void cleanup_threads()
