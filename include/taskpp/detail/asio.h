@@ -154,23 +154,17 @@ public:
 		entry;
 		while(1)
 		{
-			task_ptr task;
 			size_t actived_count = 0;
 			boost::chrono::steady_clock::time_point suspend_time;
 			do
 			{
 				suspend_time = this->wakeup_tasks();
-				actived_count = this->resume_workers(executing_tasks_);
+				actived_count = this->resume_workers();
 				if (this->task_queue_.empty())
 					this->stealing();
 			} while (actived_count > 0 && this->task_queue_.empty());
 			//pickup task and don't blocking
-			while(this->pull(task, false, suspend_time) && task)
-			{
-				this->start_task(executing_tasks_, task);
-				task.reset();
-			}
-			if(this->task_queue_.closed())
+			if(!this->pull(false, suspend_time))
 				break;
 			//run asio's handlers
 			while(this->service_.poll(ec));
@@ -182,10 +176,10 @@ public:
 			}
 		}
 		//waiting for all tasks is stoped.
-		while (!executing_tasks_.empty())
+		while (!this->running_tasks_.empty())
 		{
 			boost::chrono::steady_clock::time_point suspend_time = this->wakeup_tasks();
-			size_t actived_count= this->resume_workers(executing_tasks_);
+			size_t actived_count= this->resume_workers();
 			while(this->service_.poll(ec));
 			if(suspend_time>boost::chrono::steady_clock::now())
 			{
@@ -203,12 +197,12 @@ public:
 		task->resume();
 		if(!this->resume_coroutine(task->coroutine(), false))
 		{
-			auto it=executing_tasks_.begin();
-			while(it!=executing_tasks_.end())
+			auto it=this->running_tasks_.begin();
+			while(it!=this->running_tasks_.end())
 			{
 				if(it->get()==task)
 				{
-					executing_tasks_.erase(it);
+					this->running_tasks_.erase(it);
 					break;
 				}
 				++it;
@@ -218,7 +212,6 @@ public:
 	}
 
 private:
-	typename base::executing_list executing_tasks_;
 	boost::asio::basic_waitable_timer<boost::chrono::steady_clock> timer_;
 
 	void wait_for_schedule(const boost::chrono::steady_clock::time_point& next_time)

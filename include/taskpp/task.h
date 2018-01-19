@@ -386,17 +386,21 @@ public:
 	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) override
 	{
 		this->current_task_->suspend();
-		sleeping_tasks_.emplace(expiry_time, this->current_task_);
+		auto result=sleeping_tasks_.emplace(expiry_time, std::vector<base_task*>());
+		result.first->second.push_back(this->current_task_);
 	}
 	virtual void wakeup_task() override
 	{
 		for (auto it = sleeping_tasks_.begin(); it != sleeping_tasks_.end(); it++)
 		{
-			if (it->second == this->current_task_)
+			for(auto it_task=it->second.begin(); it_task!=it->second.end(); it_task++)
 			{
-				this->current_task_->resume();
-				sleeping_tasks_.erase(it);
-				break;
+				if (*it_task == this->current_task_)
+				{
+					this->current_task_->resume();
+					it->second.erase(it_task);
+					return;
+				}
 			}
 		}
 	}
@@ -430,14 +434,15 @@ public:
 #endif
 
 protected:
-	typedef std::list<task_ptr> executing_list;
+	typedef std::deque<task_ptr> running_list;
 	Queue task_queue_;
-	std::multimap<boost::chrono::steady_clock::time_point, base_task*> sleeping_tasks_;
+	std::map<boost::chrono::steady_clock::time_point, std::vector<base_task*>> sleeping_tasks_;
 	std::atomic<bool> stoped_ { false };
 	base_task_scheduler* scheduler_;
 	std::thread thread_;
 	StackAllocator stack_allocator_;
 	std::vector<stack_context> stacks_;
+	running_list running_tasks_;
 
 	struct markup_thread
 	{
@@ -455,36 +460,25 @@ protected:
 	{
 		markup_thread markup(this);
 		ThreadEntry entry;
-		executing_list executing_tasks;
 		entry;
-		//printf("thread %d is created\n", std::this_thread::get_id());
 		while (1)
 		{
-			task_ptr task;
 			boost::chrono::steady_clock::time_point suspend_time;
 			size_t actived_count = 0;
 			do
 			{
 				suspend_time = wakeup_tasks();
-				actived_count = resume_workers(executing_tasks);
-				if (task_queue_.empty())
-					stealing();
+				actived_count = resume_workers();
 			} while (actived_count > 0 && is_all_queue_empty());
-			if (!pull(task, actived_count==0, suspend_time) && executing_tasks.empty())
+			if(!pull(actived_count==0, suspend_time) && running_tasks_.empty())
 				break;
-			if (task)
-			{
-				start_task(executing_tasks, task);
-				if(task_queue_.closed())
-					break;
-			}
 		}
 		//clean up running tasks
-		while (!executing_tasks.empty())
+		while (!running_tasks_.empty())
 		{
 			boost::chrono::steady_clock::time_point suspend_time = wakeup_tasks();
-			size_t actived_count= resume_workers(executing_tasks);
-			if(actived_count==0 && !executing_tasks.empty())
+			size_t actived_count= resume_workers();
+			if(actived_count==0 && !running_tasks_.empty())
 				boost::this_thread::sleep_until(suspend_time);
 		}
 		stoped_ = true;
@@ -492,12 +486,13 @@ protected:
 		release_stacks();
 	}
 
-	bool pull(task_ptr& task, bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
+	bool pull(bool wait_for_pull, const boost::chrono::steady_clock::time_point& suspend_time)
 	{
 		boost::queue_op_status st;
 		if(task_queue_.empty())
 			stealing();
 
+		task_ptr task;
 		st = task_queue_.try_pull(task);
 		if (st == boost::queue_op_status::closed)
 			return false;
@@ -511,8 +506,16 @@ protected:
 			{
 				return false;
 			}
+			if (st == boost::queue_op_status::timeout)
+				return false;
 		}
-		if (st == boost::queue_op_status::closed || st == boost::queue_op_status::timeout)
+		while(st==boost::queue_op_status::success)
+		{
+			start_task(task);
+			task.reset();
+			st=task_queue_.try_pull(task);
+		}
+		if (st == boost::queue_op_status::closed)
 			return false;
 		return true;
 	}
@@ -528,10 +531,10 @@ protected:
 	}
 
 	//resume coroutines
-	size_t resume_workers(executing_list& workers)
+	size_t resume_workers()
 	{
 		size_t actived_count=0;
-		for(auto it=workers.begin(); it!=workers.end(); )
+		for(auto it=running_tasks_.begin(); it!=running_tasks_.end(); )
 		{
 			base_task* task=it->get();
 			coroutine_context* coroutine= task->coroutine();
@@ -549,7 +552,7 @@ protected:
 				}
 				else
 				{
-					it=workers.erase(it);
+					it=running_tasks_.erase(it);
 				}
 				this->current_task_=nullptr;
 			}
@@ -575,7 +578,7 @@ protected:
 		return running;
 	}
 
-	void start_task(executing_list& executing_tasks, task_ptr task)
+	void start_task(task_ptr task)
 	{
 		stack_context stack;
 		try
@@ -606,7 +609,7 @@ protected:
 			coroutine_context* coroutine=coroutine_context::create_coroutine(this->current_task_, stack);
 			this->current_task_->switch_context(coroutine);
 			if (resume_coroutine(coroutine, true))
-				executing_tasks.emplace_back(task);
+				running_tasks_.emplace_back(task);
 			this->current_task_ = nullptr;
 		}
 	}
@@ -638,12 +641,14 @@ protected:
 		auto now = boost::chrono::steady_clock::now();
 		auto next_time= now + boost::chrono::seconds(5);
 		auto it=sleeping_tasks_.begin();
+		size_t n=0;
 		while(it!=sleeping_tasks_.end())
 		{
 			if(it->first>now)
 				break;
-
-			it->second->resume();
+			for(base_task* task : it->second)
+				task->resume();
+			n+=it->second.size();
 			it=sleeping_tasks_.erase(it);
 		}
 		if(!sleeping_tasks_.empty())
@@ -764,7 +769,7 @@ private:
 	virtual size_t total_queue_size() override
 	{
 		size_t count=task_queue_.size();
-		boost::unique_lock<boost::shared_mutex> lock(threads_mutex_);
+		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		for(std::unique_ptr<thread_type>& thread : threads_)
 			count+=thread->queue_size();
 		return count;

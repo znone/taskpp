@@ -354,25 +354,15 @@ void TestTask::test_concurrency()
 	param.stack_param_.capacity=1024*1024;
 
 	task_scheduler<empty_entry, shared_stack> scheduler(param);
-	atomic<size_t> counter(0);
 	atomic<size_t> total_tasks(0), total_stacks(0);
 	atomic<bool> stoped(false);
-	thread watch([&]() {
-		while(!stoped)
-		{
-			printf("current total tasks: %8lu, used stack: %8luMB\r", 
-				(size_t)total_tasks, (size_t)total_stacks/1024/1024);
-			this_thread::sleep_for(chrono::seconds(1));
-		}
-	});
 	for(size_t i=0; i!=n; i++)
 	{
 		scheduler.push([&]() {
-			++counter;
 			++total_tasks;
 			total_stacks+=this_task::stack_size();
 
-			for(size_t i=0; i!=20; i++)
+			while(!stoped)
 			{
 				this_task::sleep_for(boost::chrono::seconds(1));
 			}
@@ -381,11 +371,26 @@ void TestTask::test_concurrency()
 			--total_tasks;
 		});
 	}
-	while(counter!=n)
+	while(total_tasks!=n)
+	{
+		printf("current total tasks: %8lu, used stack: %8luMB\r", 
+			(size_t)total_tasks, (size_t)total_stacks/1024/1024);
 		this_thread::sleep_for(chrono::seconds(1));
-	scheduler.join_all();
+	}
+	printf("current total tasks: %8lu, used stack: %8luMB\n", 
+		(size_t)total_tasks, (size_t)total_stacks/1024/1024);
+	this_thread::sleep_for(chrono::seconds(2));
+	printf("stop now.\n");
 	stoped=true;
-	watch.join();
+	while(total_tasks>0)
+	{
+		printf("current total tasks: %8lu, used stack: %8luMB\r", 
+			(size_t)total_tasks, (size_t)total_stacks/1024/1024);
+		this_thread::sleep_for(chrono::seconds(1));
+	}
+	printf("current total tasks: %8lu, used stack: %8luMB\n", 
+		(size_t)total_tasks, (size_t)total_stacks/1024/1024);
+	scheduler.join_all();
 }
 
 void TestTask::test_call_in_new_stack()
