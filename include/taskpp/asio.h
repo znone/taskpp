@@ -45,9 +45,9 @@ inline void coonnect(Socket& socket, const typename Socket::endpoint_type & peer
 }
 
 template<typename Socket>
-inline void coonnect(Socket& socket, const typename Socket::endpoint_type & peer_endpoint, boost::system::error_code& ec)
+inline void coonnect(Socket& socket, const typename Socket::endpoint_type & peer_endpoint, const yield_context& ctx)
 {
-	socket.async_connect(peer_endpoint, taskpp::yield_context(ec));
+	socket.async_connect(peer_endpoint, ctx);
 }
 
 // accept
@@ -55,7 +55,7 @@ inline void coonnect(Socket& socket, const typename Socket::endpoint_type & peer
 inline boost::asio::ip::tcp::socket accept(boost::asio::ip::tcp::acceptor& acceptor)
 {
 	boost::asio::ip::tcp::socket socket(acceptor.get_io_service());
-	acceptor.async_accept(socket, taskpp::yield_context());
+	acceptor.async_accept(socket, yield_context());
 	return std::move(socket);
 }
 
@@ -68,14 +68,14 @@ inline void accept(Acceptor& acceptor, Socket& socket)
 inline boost::asio::ip::tcp::socket accept(boost::asio::ip::tcp::acceptor& acceptor, boost::system::error_code& ec)
 {
 	boost::asio::ip::tcp::socket socket(acceptor.get_io_service());
-	acceptor.async_accept(socket, taskpp::yield_context(ec));
+	acceptor.async_accept(socket, yield_context(ec));
 	return std::move(socket);
 }
 
 template<typename Acceptor, typename Socket>
 inline void accept(Acceptor& acceptor, Socket& socket, boost::system::error_code& ec)
 {
-	acceptor.async_accept(socket, taskpp::yield_context(ec));
+	acceptor.async_accept(socket, yield_context(ec));
 }
 
 // read
@@ -87,9 +87,9 @@ inline size_t read(Socket& socket, const MutableBufferSequence& buffers)
 }
 
 template<typename Socket, typename MutableBufferSequence>
-inline size_t read(Socket& socket, const MutableBufferSequence& buffers, boost::system::error_code& ec)
+inline size_t read(Socket& socket, const MutableBufferSequence& buffers, const yield_context& ctx)
 {
-	return socket.async_receive(buffers, taskpp::yield_context(ec));
+	return socket.async_receive(buffers, ctx);
 }
 
 template<typename Socket, typename MutableBufferSequence>
@@ -99,9 +99,9 @@ inline size_t read_some(Socket& socket, const MutableBufferSequence& buffers)
 }
 
 template<typename Socket, typename MutableBufferSequence>
-inline size_t read_some(Socket& socket, const MutableBufferSequence& buffers, boost::system::error_code& ec)
+inline size_t read_some(Socket& socket, const MutableBufferSequence& buffers, const yield_context& ctx)
 {
-	return socket.async_read_some(buffers, taskpp::yield_context(ec));
+	return socket.async_read_some(buffers, ctx);
 }
 
 template<typename Socket, typename MutableBufferSequence>
@@ -113,9 +113,9 @@ inline size_t receive_from(Socket& socket, const MutableBufferSequence & buffers
 
 template<typename Socket, typename MutableBufferSequence>
 inline size_t receive_from(Socket& socket, const MutableBufferSequence & buffers, 
-	typename Socket::endpoint_type& sender_endpoint, boost::system::error_code& ec)
+	typename Socket::endpoint_type& sender_endpoint, const yield_context& ctx)
 {
-	return socket.async_read_from(buffers, sender_endpoint, taskpp::yield_context(ec));
+	return socket.async_read_from(buffers, sender_endpoint, ctx);
 }
 
 // write
@@ -127,9 +127,9 @@ inline size_t write(Socket& socket, const MutableBufferSequence& buffers)
 }
 
 template<typename Socket, typename MutableBufferSequence>
-inline size_t write(Socket& socket, const MutableBufferSequence& buffers, boost::system::error_code& ec)
+inline size_t write(Socket& socket, const MutableBufferSequence& buffers, const yield_context& ctx)
 {
-	return socket.async_send(buffers, taskpp::yield_context(ec));
+	return socket.async_send(buffers, ctx);
 }
 
 template<typename Socket, typename MutableBufferSequence>
@@ -139,9 +139,9 @@ inline size_t write_some(Socket& socket, const MutableBufferSequence& buffers)
 }
 
 template<typename Socket, typename MutableBufferSequence>
-inline size_t write_some(Socket& socket, const MutableBufferSequence& buffers, boost::system::error_code& ec)
+inline size_t write_some(Socket& socket, const MutableBufferSequence& buffers, const yield_context& ctx)
 {
-	return socket.async_write_some(buffers, taskpp::yield_context(ec));
+	return socket.async_write_some(buffers, ctx);
 }
 
 template<typename Socket, typename MutableBufferSequence>
@@ -153,9 +153,9 @@ inline size_t write_to(Socket& socket, const MutableBufferSequence& buffers,
 
 template<typename Socket, typename MutableBufferSequence>
 inline size_t write_to(Socket& socket, const MutableBufferSequence& buffers,
-	const typename Socket::endpoint_type& destination, boost::asio::socket_base::message_flags flags, boost::system::error_code& ec)
+	const typename Socket::endpoint_type& destination, boost::asio::socket_base::message_flags flags, const yield_context& ctx)
 {
-	return socket.async_write_some(buffers, taskpp::yield_context(ec));
+	return socket.async_write_some(buffers, ctx);
 }
 
 }

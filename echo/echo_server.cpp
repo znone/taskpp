@@ -13,14 +13,27 @@ struct session
 	void operator()()
 	{
 		char str[1024];
-		while(1)
+		boost::system::error_code ec;
+		while(!ec)
 		{
-			size_t n=taskpp::read_some(socket_, buffer(str));
-			taskpp::write(socket_, buffer(str, n));
+			size_t n=0;
+			n=taskpp::read_some(socket_, buffer(str), taskpp::yield_context(ec)(boost::chrono::seconds(5))(socket_));
+			if(!ec && n>0)
+			{
+				taskpp::write(socket_, buffer(str, n), taskpp::yield_context(ec)(boost::chrono::seconds(5))(socket_));
+			}
 		}
 	}
 
 	ip::tcp::socket socket_;
+
+private:
+	void handle_timeout()
+	{
+		socket_.close();
+		taskpp::this_task::self()->suspend();
+		taskpp::this_task::yield();
+	}
 };
 
 int main(int argc, char* argv[])

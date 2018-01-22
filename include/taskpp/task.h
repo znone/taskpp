@@ -113,12 +113,21 @@ struct task_priority
 	}
 };
 
+enum clock_precision
+{
+	seconds,
+	milliseconds,
+	microseconds,
+	nanoseconds
+};
+
 struct task_scheduler_param
 {
 	size_t max_threads_;
 	size_t max_tasks_ { 1024 } ;
 	stack_param stack_param_;
 	uint32_t alarm_remaining_ { 128 }; //If the stack remaining space is less than this value, alarm
+	clock_precision clock_precision_ { milliseconds } ;
 	bool enable_stealing_ { true } ;
 	bool set_thread_affinity_ { false };
 
@@ -138,8 +147,8 @@ public:
 	virtual ~base_work_thread() { }
 	base_task* current_task() const { return current_task_; }
 	virtual bool push(const task_ptr& task, bool force=false)=0;
-	virtual void task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) = 0;
-	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) = 0;
+	virtual boost::chrono::steady_clock::time_point task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) = 0;
+	virtual boost::chrono::steady_clock::time_point task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) = 0;
 	virtual void wakeup_task() =0;
 	virtual void wakeup_queue() = 0;
 	virtual void* get_stack_allocator()=0;
@@ -379,19 +388,38 @@ public:
 		thread_ = std::thread(&work_thread::run, this);
 	}
 
-	virtual void task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) override
+	virtual boost::chrono::steady_clock::time_point task_sleep_for(const boost::chrono::steady_clock::duration& expiry_time) override
 	{
-		task_sleep_until(boost::chrono::steady_clock::now() + expiry_time);
+		return task_sleep_until(boost::chrono::steady_clock::now() + expiry_time);
 	}
-	virtual void task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) override
+	virtual boost::chrono::steady_clock::time_point task_sleep_until(const boost::chrono::steady_clock::time_point& expiry_time) override
 	{
-		this->current_task_->suspend();
-		auto result=sleeping_tasks_.emplace(expiry_time, std::vector<base_task*>());
+		//adjustment time precision
+		boost::chrono::steady_clock::time_point new_time;
+		switch(scheduler_->param().clock_precision_)
+		{
+		case seconds:
+			new_time=boost::chrono::time_point_cast<boost::chrono::steady_clock::duration>(boost::chrono::time_point_cast<boost::chrono::seconds>(expiry_time));
+			break;
+		case milliseconds:
+			new_time=boost::chrono::time_point_cast<boost::chrono::steady_clock::duration>(boost::chrono::time_point_cast<boost::chrono::milliseconds>(expiry_time));
+			break;
+		case microseconds:
+			new_time=boost::chrono::time_point_cast<boost::chrono::steady_clock::duration>(boost::chrono::time_point_cast<boost::chrono::microseconds>(expiry_time));
+			break;
+		default:
+			new_time=expiry_time;
+		}
+		auto result=sleeping_tasks_.emplace(new_time, std::vector<base_task*>());
 		result.first->second.push_back(this->current_task_);
+		this->current_task_->suspend();
+		return new_time;
 	}
 	virtual void wakeup_task() override
 	{
-		for (auto it = sleeping_tasks_.begin(); it != sleeping_tasks_.end(); it++)
+		bool found=false;
+		auto it = sleeping_tasks_.begin();
+		while (found==false && it != sleeping_tasks_.end())
 		{
 			for(auto it_task=it->second.begin(); it_task!=it->second.end(); it_task++)
 			{
@@ -399,9 +427,14 @@ public:
 				{
 					this->current_task_->resume();
 					it->second.erase(it_task);
-					return;
+					found=true;
+					break;
 				}
 			}
+			if (it->second.empty())
+				it = sleeping_tasks_.erase(it);
+			else
+				++it;
 		}
 	}
 	virtual void wakeup_queue() override
@@ -1043,22 +1076,28 @@ namespace this_task
 		base_task* task = detail::base_task_scheduler::this_task();
 		if (task) task->yield();
 	}
-	inline void sleep_for(const boost::chrono::steady_clock::duration& expiry_time)
+	inline void sleep_for(const boost::chrono::steady_clock::duration& expiry_time, boost::chrono::steady_clock::time_point* new_time=nullptr)
 	{
 		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
 		if (thread)
 		{
-			thread->task_sleep_for(expiry_time);
+			if(new_time)
+				*new_time=thread->task_sleep_for(expiry_time);
+			else
+				thread->task_sleep_for(expiry_time);
 			yield();
 		}
 	}
 
-	inline void sleep_until(const boost::chrono::steady_clock::time_point& expiry_time)
+	inline void sleep_until(const boost::chrono::steady_clock::time_point& expiry_time, boost::chrono::steady_clock::time_point* new_time=nullptr)
 	{
 		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
 		if (thread)
 		{
-			thread->task_sleep_until(expiry_time);
+			if(new_time)
+				*new_time=thread->task_sleep_until(expiry_time);
+			else
+				thread->task_sleep_until(expiry_time);
 			yield();
 		}
 	}
