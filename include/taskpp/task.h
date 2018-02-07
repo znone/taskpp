@@ -125,6 +125,7 @@ struct task_scheduler_param
 {
 	size_t max_threads_;
 	size_t max_tasks_ { 1024 } ;
+	size_t stack_pool_capacity_ { 1024 } ;
 	stack_param stack_param_;
 	uint32_t alarm_remaining_ { 128 }; //If the stack remaining space is less than this value, alarm
 	clock_precision clock_precision_ { milliseconds } ;
@@ -605,8 +606,15 @@ protected:
 		else
 		{
 			stack_context stack=coroutine->stack_;
-			stack_allocator_.reset_stack(stack);
-			stacks_.push_back(stack);
+			if(stacks_.size()>scheduler_->param().stack_pool_capacity_)
+			{
+				stack_allocator_.deallocate(stack);
+			}
+			else
+			{
+				stack_allocator_.reset_stack(stack);
+				stacks_.push_back(stack);
+			}
 		}
 		return running;
 	}

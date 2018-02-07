@@ -7,6 +7,7 @@
 #include <taskpp/mutex.h>
 #include <taskpp/condition_variable.h>
 #include <boost/thread/shared_mutex.hpp>
+#include <boost/scope_exit.hpp>
 
 namespace taskpp
 {
@@ -15,7 +16,7 @@ class event_loop
 {
 	typedef std::function<void()> event_type;
 public:
-	event_loop() : stoped_(true), next_timer_id_(0) { }
+	event_loop() : status_(status_stoped), next_timer_id_(0) { }
 	event_loop(const event_loop&) = delete;
 	event_loop& operator=(const event_loop&) = delete;
 	~event_loop()
@@ -33,19 +34,22 @@ public:
 		events_cv_.notify_one();
 	}
 
-	void stop()
+	void stop(bool clear_timers=false)
 	{
+		if (clear_timers)
+			cancel_all_timer();
+
 		std::unique_lock<mutex> lk(events_mutex_);
-		if (!stoped_)
+		if (status_==status_running)
 		{
-			stoped_ = true;
+			status_ = status_stopping;
 			events_cv_.notify_all();
 		}
 	}
 	bool stoped() const 
 	{ 
 		std::unique_lock<mutex> lk(events_mutex_);
-		return stoped_;
+		return status_==status_stoped;
 	}
 
 	void run();
@@ -127,7 +131,7 @@ public:
 	}
 
 private:
-	bool stoped_;
+	enum { status_stoped, status_running, status_stopping } status_;
 	mutable mutex events_mutex_;
 	condition_variable events_cv_;
 	std::queue<event_type> events_;
@@ -187,9 +191,13 @@ inline void event_loop::run()
 {
 	{
 		std::unique_lock<mutex> lk(events_mutex_);
-		stoped_ = false;
+		status_ = status_running;
 	}
-	while(!stoped_)
+	BOOST_SCOPE_EXIT_ALL(this) {
+		std::unique_lock<mutex> lk(events_mutex_);
+		status_ = status_stoped;
+	};
+	while(status_==status_running)
 	{
 		event_type handler;
 		boost::chrono::steady_clock::time_point next_expired_time;
@@ -199,7 +207,7 @@ inline void event_loop::run()
 		{
 			handler();
 			handler=nullptr;
-			if(stoped_) return;
+			if(status_==status_stopping) return;
 		}
 		if (!timer_changed())
 		{
