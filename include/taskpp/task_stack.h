@@ -2,6 +2,7 @@
 #define _TASKPP_TASK_STACK_H_
 
 #include <boost/context/fixedsize_stack.hpp>
+#include <stdint.h>
 
 namespace taskpp
 {
