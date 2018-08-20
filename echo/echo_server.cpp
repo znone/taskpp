@@ -26,14 +26,6 @@ struct session
 	}
 
 	ip::tcp::socket socket_;
-
-private:
-	void handle_timeout()
-	{
-		socket_.close();
-		taskpp::this_task::self()->suspend();
-		taskpp::this_task::yield();
-	}
 };
 
 int main(int argc, char* argv[])

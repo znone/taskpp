@@ -373,6 +373,13 @@ public:
 
 	bool stoped() const { return stoped_; }
 	size_t queue_size() const { return task_queue_.size(); }
+	size_t task_count() const 
+	{
+		size_t count = task_queue_.size()+running_tasks_.size()+sleeping_tasks_.size();
+		if(this->current_task_)
+			++count;
+		return count;
+	}
 	std::thread::id thread_id() const { return thread_.get_id(); }
 	bool joinable() const { return thread_.joinable(); }
 	void join() { thread_.join(); }
@@ -835,7 +842,7 @@ private:
 		}
 	}
 
-	void add_thread()
+	thread_type* add_thread()
 	{
 		std::unique_ptr<thread_type> thread(new thread_type(this));
 		thread->init();
@@ -843,6 +850,7 @@ private:
 		threads_.push_back(std::move(thread));
 		if(param_.set_thread_affinity_)
 			threads_.back()->set_thread_affinity((threads_.size()-1)%std::thread::hardware_concurrency());
+		return threads_.back().get();
 	}
 
 	void cleanup_threads()
@@ -915,10 +923,11 @@ private:
 	{
 		thread_type* p = nullptr;
 		size_t n=0;
-		for (const std::unique_ptr<thread_type>& thread : threads_)
+		for (size_t i=0; i!=threads_.size(); i++)
 		{
-			size_t size = thread->queue_size();
-			if (size>0 && (n==0 || size > n) )
+			auto& thread = threads_[i];
+			size_t size = thread->task_count();
+			if (i==0 || size > n )
 			{
 				p = thread.get();
 				n = size;
@@ -931,12 +940,13 @@ private:
 	{
 		thread_type* p = nullptr;
 		size_t n = 0;
-		for (const std::unique_ptr<thread_type>& thread : threads_)
+		for (size_t i=0; i!=threads_.size(); i++)
 		{
+			auto& thread = threads_[i];
 			if (!thread->stoped())
 			{
-				size_t size = thread->queue_size();
-				if (n == 0 || size < n)
+				size_t size = thread->task_count();
+				if (i==0 || size < n)
 				{
 					p = thread.get();
 					n = size;
@@ -955,7 +965,8 @@ private:
 			std::pair<thread_type*, size_t> result = most_idle();
 			if (result.first)
 			{
-				pushed = result.first->push(task);
+				if(result.second==0 || threads_.size()>=param_.max_threads_)
+					pushed = result.first->push(task);
 			}
 		}
 		return pushed;

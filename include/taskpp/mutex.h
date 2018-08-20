@@ -93,7 +93,13 @@ private:
 	Mutex mutex_;
 };
 
-typedef basic_shared_mutex<std::mutex> shared_mutex;
+#if __cplusplus >= 201703 || ( _MSC_VER>=1800 && _HAS_SHARED_MUTEX==1 )
+#include <shared_mutex>
+typedef basic_shared_mutex<std::shared_mutex> shared_mutex;
+#else
+#include <boost/thread/shared_mutex.hpp>
+typedef basic_shared_mutex<boost::shared_mutex> shared_mutex;
+#endif
 
 }
 

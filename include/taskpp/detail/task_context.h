@@ -126,7 +126,7 @@ inline void base_context::coroutine_start(base_context* ctx)
 
 #else
 
-inline inline void base_context::coroutine_start(base_context* ctx)
+inline void base_context::coroutine_start(base_context* ctx)
 {
 	ctx->routine_implement();
 }
