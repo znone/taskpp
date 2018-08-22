@@ -86,7 +86,8 @@ public:
 		}
 	}
 
-	void wait_for(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::duration& expiry_time)
+	template<typename Duration>
+	void wait_for(std::unique_lock<mutex>& lk, const Duration& expiry_time)
 	{
 		base_task* task=this_task::self();
 		if(task)
@@ -105,7 +106,8 @@ public:
 		}
 	}
 
-	void wait_until(std::unique_lock<mutex>& lk, const boost::chrono::steady_clock::time_point& expiry_time)
+	template<typename TimePoint>
+	void wait_until(std::unique_lock<mutex>& lk, const TimePoint& expiry_time)
 	{
 		base_task* task=this_task::self();
 		if(task)

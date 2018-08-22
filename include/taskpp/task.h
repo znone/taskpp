@@ -354,6 +354,55 @@ namespace detail
 template<class Queue, class ThreadEntry, class StackAllocator, class Thread>
 class task_scheduler;
 
+template<typename ToDuration, typename FromDuration>
+struct duration_cast_helper
+{
+	ToDuration operator()(const FromDuration& from) const
+	{
+		return ToDuration::duration(from.count()*
+			FromDuration::period::num*ToDuration::period::den/(FromDuration::period::den*ToDuration::period::num));
+	}
+};
+
+template<typename Duration>
+struct duration_cast_helper<Duration, Duration>
+{
+	Duration operator()(const Duration& from) const
+	{
+		return from;
+	}
+};
+
+template<typename ToDuration, typename FromDuration>
+inline ToDuration duration_cast(const FromDuration& from)
+{
+	return duration_cast_helper<ToDuration, FromDuration>()(from);
+}
+
+template<typename ToTimePoint, typename FromTimePoint>
+struct time_point_cast_helper
+{
+	ToTimePoint operator()(const FromTimePoint& from) const
+	{
+		return ToTimePoint(time_point_cast(from.time_since_epoch()));
+	}
+};
+
+template<typename TimePoint>
+struct time_point_cast_helper<TimePoint, TimePoint>
+{
+	TimePoint operator()(const TimePoint& from) const
+	{
+		return from;
+	}
+};
+
+template<typename ToTimePoint, typename FromTimePoint>
+inline ToTimePoint time_point_cast(const FromTimePoint& from)
+{
+	return time_point_cast_helper<ToTimePoint, FromTimePoint>()(from);
+}
+
 template<class Parent, class Queue, class ThreadEntry=empty_entry, class StackAllocator=fixedsize_stack>
 class work_thread : public Parent
 {
@@ -547,7 +596,7 @@ protected:
 			{
 				return false;
 			}
-			if (st == boost::queue_op_status::timeout)
+			if (st == boost::queue_op_status::timeout || st == boost::queue_op_status::closed)
 				return false;
 		}
 		while(st==boost::queue_op_status::success)
@@ -690,6 +739,9 @@ protected:
 		auto next_time= now + boost::chrono::seconds(5);
 		auto it=sleeping_tasks_.begin();
 		size_t n=0;
+		char s[128];
+		sprintf(s, "init %llu, %llu\n", now.time_since_epoch().count(), next_time.time_since_epoch().count());
+		OutputDebugStringA(s);
 		while(it!=sleeping_tasks_.end())
 		{
 			if(it->first>now)
@@ -703,7 +755,11 @@ protected:
 		{
 			it=sleeping_tasks_.begin();
 			if(it->first<=next_time)
+			{
 				next_time=it->first;
+				sprintf(s, "alter %llu\n", next_time.time_since_epoch().count());
+				OutputDebugStringA(s);
+			}
 		}
 		return next_time;
 	}
@@ -962,11 +1018,13 @@ private:
 		boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
 		if (!threads_.empty())
 		{
-			std::pair<thread_type*, size_t> result = most_idle();
-			if (result.first)
+			thread_type* thread;
+			size_t count;
+			std::tie(thread, count) = most_idle();
+			if (thread)
 			{
-				if(result.second==0 || threads_.size()>=param_.max_threads_)
-					pushed = result.first->push(task);
+				if(count==0 || threads_.size()>=param_.max_threads_)
+					pushed = thread->push(task);
 			}
 		}
 		return pushed;
@@ -979,14 +1037,12 @@ private:
 		if(n==0 && param_.enable_stealing_)
 		{
 			boost::shared_lock<boost::shared_mutex> lock(threads_mutex_);
-			std::pair<thread_type*, size_t> result = busiest();
-			if(result.first!=nullptr)
+			thread_type* thread;
+			size_t count;
+			std::tie(thread, count) = busiest();
+			if(thread && thread != current_thread)
 			{
-				thread_type* thread = result.first;
-				if (thread != current_thread)
-				{
-					n = thread->task_queue().split(current_thread->task_queue(), 1);
-				}
+				n = thread->task_queue().split(current_thread->task_queue(), 1);
 			}
 		}
 	}
@@ -1095,28 +1151,38 @@ namespace this_task
 		base_task* task = detail::base_task_scheduler::this_task();
 		if (task) task->yield();
 	}
-	inline void sleep_for(const boost::chrono::steady_clock::duration& expiry_time, boost::chrono::steady_clock::time_point* new_time=nullptr)
+	template<typename Duration, typename TimePoint>
+	inline void sleep_for(const Duration& expiry_time, TimePoint* new_time)
 	{
 		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
 		if (thread)
 		{
+			auto new_tp=thread->task_sleep_until(boost::chrono::steady_clock::now() + detail::duration_cast<boost::chrono::steady_clock::duration>(expiry_time));
 			if(new_time)
-				*new_time=thread->task_sleep_for(expiry_time);
-			else
-				thread->task_sleep_for(expiry_time);
+				*new_time=detail::time_point_cast<TimePoint>(new_tp);
+			yield();
+		}
+	}
+	template<typename Duration>
+	inline void sleep_for(const Duration& expiry_time)
+	{
+		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
+		if (thread)
+		{
+			thread->task_sleep_until(boost::chrono::steady_clock::now() + detail::duration_cast<boost::chrono::steady_clock::duration>(expiry_time));
 			yield();
 		}
 	}
 
-	inline void sleep_until(const boost::chrono::steady_clock::time_point& expiry_time, boost::chrono::steady_clock::time_point* new_time=nullptr)
+	template<typename TimePoint>
+	inline void sleep_until(const typename TimePoint& expiry_time, typename TimePoint* new_time=nullptr)
 	{
 		detail::base_work_thread* thread = detail::base_task_scheduler::this_thread();
 		if (thread)
 		{
+			auto new_tp=thread->task_sleep_until(detail::time_point_cast<boost::chrono::steady_clock::time_point>(expiry_time));
 			if(new_time)
-				*new_time=thread->task_sleep_until(expiry_time);
-			else
-				thread->task_sleep_until(expiry_time);
+				*new_time=detail::time_point_cast<TimePoint>(new_tp);
 			yield();
 		}
 	}
@@ -1129,7 +1195,7 @@ namespace this_task
 	}
 	inline void check_stack_overflow()
 	{
-		if((intptr_t)stack_top() < ((intptr_t)self()->stack_bottom()-stack_size()))
+		if((intptr_t)stack_top() < ((intptr_t)self()->stack_bottom()- (intptr_t)stack_size()))
 			abort();
 	}
 

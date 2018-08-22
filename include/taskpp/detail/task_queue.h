@@ -18,8 +18,14 @@ class sync_queue : public boost::sync_queue<ValueType, Container>
 public:
 	typedef typename base_::size_type size_type;
 	typedef typename base_::value_type value_type;
+#if BOOST_VERSION < 106600
 	typedef typename base_::time_point time_point;
 	typedef typename base_::duration duration;
+#else
+	typedef typename boost::chrono::steady_clock clock;
+	typedef typename clock::time_point time_point;
+	typedef typename clock::duration duration;
+#endif // boost 1.66.0
 
 	sync_queue() : max_size_(SIZE_MAX) { }
 	explicit sync_queue(size_t max_size) : max_size_(max_size) { }
@@ -43,8 +49,13 @@ public:
 	{
 		{
 			boost::unique_lock<boost::mutex> lk(this->mtx_);
-			if (boost::queue_op_status::timeout == this->wait_until_not_empty_until(lk, tp))
-				return boost::queue_op_status::timeout;
+#if BOOST_VERSION < 106600
+			boost::queue_op_status status = this->wait_until_not_empty_until(lk, tp);
+#else
+			boost::queue_op_status status = this->wait_until_not_empty_or_closed_until(lk, tp);
+#endif // boost 1.66.0
+			if (boost::queue_op_status::success != status)
+				return status;
 		}
 		return this->try_pull(elem);
 	}
@@ -90,8 +101,14 @@ class sync_priority_queue : public boost::sync_priority_queue<ValueType, Contain
 public:
 	typedef typename base_::size_type size_type;
 	typedef typename base_::value_type value_type;
+#if BOOST_VERSION < 106600
 	typedef typename base_::time_point time_point;
 	typedef typename base_::duration duration;
+#else
+	typedef typename boost::chrono::steady_clock clock;
+	typedef typename clock::time_point time_point;
+	typedef typename clock::duration duration;
+#endif // boost 1.66.0
 
 	sync_priority_queue() : max_size_(SIZE_MAX) { }
 	explicit sync_priority_queue(size_t max_size) : max_size_(max_size) { }
@@ -113,8 +130,13 @@ public:
 	{
 		{
 			boost::unique_lock<boost::mutex> lk(this->mtx_);
-			if (boost::queue_op_status::timeout == this->wait_until_not_empty_until(lk, tp))
-				return boost::queue_op_status::timeout;
+#if BOOST_VERSION < 106600
+			boost::queue_op_status status = this->wait_until_not_empty_until(lk, tp);
+#else
+			boost::queue_op_status status = this->wait_until_not_empty_or_closed_until(lk, tp);
+#endif // boost 1.66.0
+			if (boost::queue_op_status::success != status)
+				return status;
 		}
 		return this->try_pull(elem);
 	}

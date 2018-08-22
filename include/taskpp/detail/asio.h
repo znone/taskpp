@@ -231,6 +231,7 @@ public:
 			{
 				wait_for_schedule(suspend_time);
 				this->service_.run_one(ec);
+				while(this->service_.poll(ec));
 			}
 		}
 		//waiting for all tasks is stoped.
@@ -285,9 +286,12 @@ private:
 
 	void wait_for_schedule(const boost::chrono::steady_clock::time_point& next_time)
 	{
-		timer_.expires_at(next_time);
-		timer_.async_wait([this](const boost::system::error_code& ec) {
-		});
+		if(timer_.expires_at() < boost::chrono::steady_clock::now())
+		{
+			timer_.expires_at(next_time);
+			timer_.async_wait([this](const boost::system::error_code& ec) {
+			});
+		}
 	}
 };
 

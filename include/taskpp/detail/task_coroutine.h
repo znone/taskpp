@@ -48,7 +48,7 @@ private:
 	void check_stack_overflow() const
 	{
 		if( (intptr_t)mine_ > (intptr_t)stack_.sp ||
-			(intptr_t)mine_ < ((intptr_t)stack_.sp-stack_.size)) 
+			(intptr_t)mine_ < ((intptr_t)stack_.sp- (intptr_t)stack_.size))
 			abort();
 	}
 };
